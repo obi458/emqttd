@@ -100,7 +100,7 @@ init_expand_plugin_config(PluginDir) ->
 
 get_expand_plugin_config() ->
     case emqx_config:get_env(expand_plugins_dir) of
-        undefined -> ok;
+        undefined -> []; % cw
         Dir ->
             PluginsDir = filelib:wildcard("*", Dir),
             lists:foldl(fun(PluginDir, Acc) ->
