@@ -201,6 +201,8 @@ join(Words) ->
 parse(Topic) when is_binary(Topic) ->
     parse(Topic, #{}).
 
+parse(<<"$local/", Topic/binary>>, Options) -> %cw
+        parse(Topic, Options);
 parse(Topic = <<"$queue/", _/binary>>, #{share := _Group}) ->
     error({invalid_topic, Topic});
 parse(Topic = <<?SHARE, "/", _/binary>>, #{share := _Group}) ->
