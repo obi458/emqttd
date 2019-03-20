@@ -203,11 +203,13 @@ client_id(#pstate{client_id = ClientId}) ->
 credentials(#pstate{zone       = Zone,
                     client_id  = ClientId,
                     username   = Username,
-                    peername   = Peername}) ->
+                    peername   = Peername,
+                    connected_at = ConnectedAt}) ->
     #{zone      => Zone,
       client_id => ClientId,
       username  => Username,
-      peername  => Peername}.
+      peername  => Peername,
+      connected_at => ConnectedAt}. % cordaware
 
 stats(#pstate{recv_stats = #{pkt := RecvPkt, msg := RecvMsg},
               send_stats = #{pkt := SendPkt, msg := SendMsg}}) ->
