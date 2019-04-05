@@ -27,18 +27,32 @@
 -boot_mnesia({mnesia, [boot]}).
 -copy_mnesia({mnesia, [copy]}).
 
+%% APIs
 -export([start_link/0]).
 
--export([subscribe/3, unsubscribe/3]).
+-export([ subscribe/3
+        , unsubscribe/3
+        ]).
+
 -export([dispatch/3]).
--export([maybe_ack/1, maybe_nack_dropped/1, nack_no_connection/1, is_ack_required/1]).
+
+-export([ maybe_ack/1
+        , maybe_nack_dropped/1
+        , nack_no_connection/1
+        , is_ack_required/1
+        ]).
 
 %% for testing
 -export([subscribers/2]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -define(SERVER, ?MODULE).
 -define(TAB, emqx_shared_subscription).
@@ -296,11 +310,11 @@ handle_call({unsubscribe, Group, Topic, SubPid}, _From, State) ->
     {reply, ok, State};
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[SharedSub] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Shared Sub] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?ERROR("[SharedSub] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Shared Sub] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({mnesia_table_event, {write, NewRecord, _}}, State = #state{pmon = PMon}) ->
@@ -315,12 +329,12 @@ handle_info({mnesia_table_event, _Event}, State) ->
     {noreply, State};
 
 handle_info({'DOWN', _MRef, process, SubPid, _Reason}, State = #state{pmon = PMon}) ->
-    ?INFO("[SharedSub] shared subscriber down: ~p", [SubPid]),
+    ?LOG(info, "[Shared Sub] Shared subscriber down: ~p", [SubPid]),
     cleanup_down(SubPid),
     {noreply, update_stats(State#state{pmon = emqx_pmon:erase(SubPid, PMon)})};
 
 handle_info(Info, State) ->
-    ?ERROR("[SharedSub] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Shared Sub] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

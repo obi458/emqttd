@@ -25,15 +25,18 @@
 -boot_mnesia({mnesia, [boot]}).
 -copy_mnesia({mnesia, [copy]}).
 
--export([init/1,
-         handle_event/2,
-         handle_call/2,
-         handle_info/2,
-         terminate/2]).
+%% gen_event callbacks
+-export([ init/1
+        , handle_event/2
+        , handle_call/2
+        , handle_info/2
+        , terminate/2
+        ]).
 
--export([load/0,
-         unload/0,
-         get_alarms/0]).
+-export([ load/0
+        , unload/0
+        , get_alarms/0
+        ]).
 
 -record(common_alarm, {id, desc}).
 -record(alarm_history, {id, clear_at}).
@@ -90,17 +93,17 @@ init(_) ->
 handle_event({set_alarm, {AlarmId, AlarmDesc = #alarm{timestamp = undefined}}}, State) ->
     handle_event({set_alarm, {AlarmId, AlarmDesc#alarm{timestamp = os:timestamp()}}}, State);
 handle_event({set_alarm, Alarm = {AlarmId, AlarmDesc}}, State) ->
-    ?LOG(notice, "Alarm report: set ~p", [Alarm]),
+    ?LOG(warning, "[Alarm Handler] ~p set", [Alarm]),
     case encode_alarm(Alarm) of
         {ok, Json} ->
             emqx_broker:safe_publish(alarm_msg(topic(alert, maybe_to_binary(AlarmId)), Json));
         {error, Reason} ->
-            ?LOG(error, "Failed to encode alarm: ~p", [Reason])
+            ?LOG(error, "[Alarm Handler] Failed to encode alarm: ~p", [Reason])
     end,
     set_alarm_(AlarmId, AlarmDesc),
     {ok, State};
 handle_event({clear_alarm, AlarmId}, State) ->
-    ?LOG(notice, "Alarm report: clear ~p", [AlarmId]),
+    ?LOG(notice, "[Alarm Handler] ~p clear", [AlarmId]),
     emqx_broker:safe_publish(alarm_msg(topic(clear, maybe_to_binary(AlarmId)), <<"">>)),
     clear_alarm_(AlarmId),
     {ok, State};
@@ -170,5 +173,4 @@ get_alarms_() ->
 set_alarm_history(Id) ->
     mnesia:dirty_write(?ALARM_HISTORY_TAB, #alarm_history{id = Id,
                                                           clear_at = undefined}).
-
 

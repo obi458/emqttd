@@ -18,18 +18,20 @@
 -include("emqx_mqtt.hrl").
 -include("logger.hrl").
 
--export([info/1]).
--export([attrs/1]).
--export([stats/1]).
--export([kick/1]).
--export([session/1]).
+-export([ info/1
+        , attrs/1
+        , stats/1
+        , kick/1
+        , session/1
+        ]).
 
 %% websocket callbacks
--export([init/2]).
--export([websocket_init/1]).
--export([websocket_handle/2]).
--export([websocket_info/2]).
--export([terminate/3]).
+-export([ init/2
+        , websocket_init/1
+        , websocket_handle/2
+        , websocket_info/2
+        , terminate/3
+        ]).
 
 -record(state, {
           request,
@@ -111,12 +113,23 @@ call(WSPid, Req) when is_pid(WSPid) ->
 %%------------------------------------------------------------------------------
 
 init(Req, Opts) ->
+    IdleTimeout = proplists:get_value(idle_timeout, Opts, 7200000),
+    DeflateOptions = maps:from_list(proplists:get_value(deflate_options, Opts, [])),
+    MaxFrameSize = case proplists:get_value(max_frame_size, Opts, 0) of
+                       0 -> infinity;
+                       MFS -> MFS
+                   end,
+    Compress = proplists:get_value(compress, Opts, false),
+    Options = #{compress => Compress,
+                deflate_opts => DeflateOptions,
+                max_frame_size => MaxFrameSize,
+                idle_timeout => IdleTimeout},
     case cowboy_req:parse_header(<<"sec-websocket-protocol">>, Req) of
         undefined ->
-            {cowboy_websocket, Req, #state{}};
+            {cowboy_websocket, Req, #state{}, Options};
         [<<"mqtt", Vsn/binary>>] ->
             Resp = cowboy_req:set_resp_header(<<"sec-websocket-protocol">>, <<"mqtt", Vsn/binary>>, Req),
-            {cowboy_websocket, Resp, #state{request = Req, options = Opts}, #{idle_timeout => 86400000}};
+            {cowboy_websocket, Resp, #state{request = Req, options = Opts}, Options};
         _ ->
             {ok, cowboy_req:reply(400, Req), #state{}}
     end.
@@ -143,12 +156,13 @@ websocket_init(#state{request = Req, options = Options}) ->
                 idle_timeout = IdleTimout}}.
 
 send_fun(WsPid) ->
-    fun(Data) ->
+    fun(Packet, Options) ->
+        Data = emqx_frame:serialize(Packet, Options),
         BinSize = iolist_size(Data),
         emqx_pd:update_counter(send_cnt, 1),
         emqx_pd:update_counter(send_oct, BinSize),
         WsPid ! {binary, iolist_to_binary(Data)},
-        ok
+        {ok, Data}
     end.
 
 stat_fun() ->
@@ -160,7 +174,7 @@ websocket_handle({binary, [<<>>]}, State) ->
     {ok, ensure_stats_timer(State)};
 websocket_handle({binary, Data}, State = #state{parse_state = ParseState,
                                                 proto_state = ProtoState}) ->
-    ?LOG(debug, "RECV ~p", [Data]),
+    ?LOG(debug, "[WS Connection] RECV ~p", [Data]),
     BinSize = iolist_size(Data),
     emqx_pd:update_counter(recv_oct, BinSize),
     emqx_metrics:trans(inc, 'bytes/received', BinSize),
@@ -174,7 +188,7 @@ websocket_handle({binary, Data}, State = #state{parse_state = ParseState,
                 {ok, ProtoState1} ->
                     websocket_handle({binary, Rest}, reset_parser(State#state{proto_state = ProtoState1}));
                 {error, Error} ->
-                    ?LOG(error, "Protocol error - ~p", [Error]),
+                    ?LOG(error, "[WS Connection] Protocol error: ~p", [Error]),
                     shutdown(Error, State);
                 {error, Reason, ProtoState1} ->
                     shutdown(Reason, State#state{proto_state = ProtoState1});
@@ -182,11 +196,11 @@ websocket_handle({binary, Data}, State = #state{parse_state = ParseState,
                     shutdown(Error, State#state{proto_state = ProtoState1})
             end;
         {error, Error} ->
-            ?LOG(error, "Frame error: ~p", [Error]),
+            ?LOG(error, "[WS Connection] Frame error: ~p", [Error]),
             shutdown(Error, State)
     catch
         _:Error ->
-            ?LOG(error, "Frame error:~p~nFrame data: ~p", [Error, Data]),
+            ?LOG(error, "[WS Connection] Frame error:~p~nFrame data: ~p", [Error, Data]),
             shutdown(parse_error, State)
     end;
 %% Pings should be replied with pongs, cowboy does it automatically
@@ -233,12 +247,12 @@ websocket_info({timeout, Timer, emit_stats},
     {ok, State#state{stats_timer = undefined}, hibernate};
 
 websocket_info({keepalive, start, Interval}, State) ->
-    ?LOG(debug, "Keepalive at the interval of ~p", [Interval]),
+    ?LOG(debug, "[WS Connection] Keepalive at the interval of ~p", [Interval]),
     case emqx_keepalive:start(stat_fun(), Interval, {keepalive, check}) of
         {ok, KeepAlive} ->
             {ok, State#state{keepalive = KeepAlive}};
         {error, Error} ->
-            ?LOG(warning, "Keepalive error - ~p", [Error]),
+            ?LOG(warning, "[WS Connection] Keepalive error: ~p", [Error]),
             shutdown(Error, State)
     end;
 
@@ -247,19 +261,19 @@ websocket_info({keepalive, check}, State = #state{keepalive = KeepAlive}) ->
         {ok, KeepAlive1} ->
             {ok, State#state{keepalive = KeepAlive1}};
         {error, timeout} ->
-            ?LOG(debug, "Keepalive Timeout!"),
+            ?LOG(debug, "[WS Connection] Keepalive Timeout!"),
             shutdown(keepalive_timeout, State);
         {error, Error} ->
-            ?LOG(error, "Keepalive error - ~p", [Error]),
+            ?LOG(error, "[WS Connection] Keepalive error: ~p", [Error]),
             shutdown(keepalive_error, State)
     end;
 
 websocket_info({shutdown, discard, {ClientId, ByPid}}, State) ->
-    ?LOG(warning, "discarded by ~s:~p", [ClientId, ByPid]),
+    ?LOG(warning, "[WS Connection] Discarded by ~s:~p", [ClientId, ByPid]),
     shutdown(discard, State);
 
 websocket_info({shutdown, conflict, {ClientId, NewPid}}, State) ->
-    ?LOG(warning, "clientid '~s' conflict with ~p", [ClientId, NewPid]),
+    ?LOG(warning, "[WS Connection] Clientid '~s' conflict with ~p", [ClientId, NewPid]),
     shutdown(conflict, State);
 
 websocket_info({binary, Data}, State) ->
@@ -269,14 +283,14 @@ websocket_info({shutdown, Reason}, State) ->
     shutdown(Reason, State);
 
 websocket_info(Info, State) ->
-    ?LOG(error, "unexpected info: ~p", [Info]),
+    ?LOG(error, "[WS Connection] Unexpected info: ~p", [Info]),
     {ok, State}.
 
 terminate(SockError, _Req, #state{keepalive   = Keepalive,
                                   proto_state = ProtoState,
                                   shutdown    = Shutdown}) ->
 
-    ?LOG(debug, "Terminated for ~p, sockerror: ~p", [Shutdown, SockError]),
+    ?LOG(debug, "[WS Connection] Terminated for ~p, sockerror: ~p", [Shutdown, SockError]),
     emqx_keepalive:cancel(Keepalive),
     case {ProtoState, Shutdown} of
         {undefined, _} -> ok;
@@ -305,4 +319,3 @@ shutdown(Reason, State) ->
 
 wsock_stats() ->
     [{Key, emqx_pd:get_counter(Key)} || Key <- ?SOCK_STATS].
-

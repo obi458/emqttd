@@ -15,17 +15,18 @@
 %% @doc This module implements EMQX Bridge transport layer on top of MQTT protocol
 
 -module(emqx_bridge_mqtt).
+
 -behaviour(emqx_bridge_connect).
 
 %% behaviour callbacks
--export([start/1,
-         send/2,
-         stop/2
+-export([ start/1
+        , send/2
+        , stop/2
         ]).
 
 %% optional behaviour callbacks
--export([ensure_subscribed/3,
-         ensure_unsubscribed/2
+-export([ ensure_subscribed/3
+        , ensure_unsubscribed/2
         ]).
 
 -include("emqx_mqtt.hrl").
@@ -38,6 +39,10 @@
 -define(SENT(RefIds), {sent, RefIds}).
 -define(ACKED(AnyPktId), {acked, AnyPktId}).
 -define(STOP(Ref), {stop, Ref}).
+
+%%------------------------------------------------------------------------------
+%% emqx_bridge_connect callbacks
+%%------------------------------------------------------------------------------
 
 start(Config = #{address := Address}) ->
     Ref = make_ref(),
@@ -79,13 +84,19 @@ stop(Ref, #{ack_collector := AckCollector, client_pid := Pid}) ->
     ok.
 
 ensure_subscribed(#{client_pid := Pid}, Topic, QoS) when is_pid(Pid) ->
-    emqx_client:subscribe(Pid, Topic, QoS);
+    case emqx_client:subscribe(Pid, Topic, QoS) of
+        {ok, _, _} -> ok;
+        Error -> Error
+    end;
 ensure_subscribed(_Conn, _Topic, _QoS) ->
     %% return ok for now, next re-connect should should call start with new topic added to config
     ok.
 
 ensure_unsubscribed(#{client_pid := Pid}, Topic) when is_pid(Pid) ->
-    emqx_client:unsubscribe(Pid, Topic);
+    case emqx_client:unsubscribe(Pid, Topic) of
+        {ok, _, _} -> ok;
+        Error -> Error
+    end;
 ensure_unsubscribed(_, _) ->
     %% return ok for now, next re-connect should should call start with this topic deleted from config
     ok.

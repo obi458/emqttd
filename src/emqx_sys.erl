@@ -20,10 +20,24 @@
 -include("logger.hrl").
 
 -export([start_link/0]).
--export([version/0, uptime/0, datetime/0, sysdescr/0, sys_interval/0]).
+
+-export([ version/0
+        , uptime/0
+        , datetime/0
+        , sysdescr/0
+        , sys_interval/0
+        ]).
+
 -export([info/0]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+
+%% gen_server callbacks
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -import(emqx_topic, [systop/1]).
 -import(emqx_misc, [start_timer/2]).
@@ -39,6 +53,10 @@
     datetime, % Broker local datetime
     sysdescr  % Broker description
 ]).
+
+%%------------------------------------------------------------------------------
+%% APIs
+%%------------------------------------------------------------------------------
 
 -spec(start_link() -> {ok, pid()} | ignore | {error, any()}).
 start_link() ->
@@ -99,11 +117,11 @@ handle_call(uptime, _From, State) ->
     {reply, uptime(State), State};
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[SYS] unexpected call: ~p", [Req]),
+    ?LOG(error, "[SYS] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?ERROR("[SYS] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[SYS] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({timeout, TRef, heartbeat}, State = #state{heartbeat = TRef}) ->
@@ -120,7 +138,7 @@ handle_info({timeout, TRef, tick}, State = #state{ticker = TRef, version = Versi
     {noreply, tick(State), hibernate};
 
 handle_info(Info, State) ->
-    ?ERROR("[SYS] unexpected info: ~p", [Info]),
+    ?LOG(error, "[SYS] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #state{heartbeat = TRef1, ticker = TRef2}) ->
@@ -154,7 +172,7 @@ uptime(days, D) ->
 publish(uptime, Uptime) ->
     safe_publish(systop(uptime), Uptime);
 publish(datetime, Datetime) ->
-    safe_publish(systop(datatype), Datetime);
+    safe_publish(systop(datetime), Datetime);
 publish(version, Version) ->
     safe_publish(systop(version), #{retain => true}, Version);
 publish(sysdescr, Descr) ->

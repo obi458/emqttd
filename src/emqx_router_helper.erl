@@ -27,14 +27,21 @@
 -copy_mnesia({mnesia, [copy]}).
 
 %% API
--export([start_link/0, monitor/1]).
-
-%% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ start_link/0
+        , monitor/1
+        ]).
 
 %% Internal export
 -export([stats_fun/0]).
+
+%% gen_server callbacks
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -record(routing_node, {name, const = unused}).
 
@@ -96,11 +103,11 @@ init([]) ->
     {ok, #{nodes => Nodes}, hibernate}.
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[RouterHelper] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Router Helper] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?ERROR("[RouterHelper] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Router Helper] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({mnesia_table_event, {write, {?ROUTING_NODE, Node, _}, _}}, State = #{nodes := Nodes}) ->
@@ -116,7 +123,7 @@ handle_info({mnesia_table_event, {delete, {?ROUTING_NODE, _Node}, _}}, State) ->
     {noreply, State};
 
 handle_info({mnesia_table_event, Event}, State) ->
-    ?ERROR("[RouterHelper] unexpected mnesia_table_event: ~p", [Event]),
+    ?LOG(error, "[Router Helper] Unexpected mnesia_table_event: ~p", [Event]),
     {noreply, State};
 
 handle_info({nodedown, Node}, State = #{nodes := Nodes}) ->
@@ -134,7 +141,7 @@ handle_info({membership, _Event}, State) ->
     {noreply, State};
 
 handle_info(Info, State) ->
-    ?ERROR("[RouteHelper] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Route Helper] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

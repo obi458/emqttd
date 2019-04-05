@@ -17,13 +17,25 @@
 -behaviour(gen_server).
 
 -include("emqx.hrl").
+-include("logger.hrl").
 
+%% APIs
 -export([start_link/0]).
--export([trace/2]).
--export([start_trace/3, lookup_traces/0, stop_trace/1]).
 
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ trace/2
+        , start_trace/3
+        , lookup_traces/0
+        , stop_trace/1
+        ]).
+
+%% gen_server callbacks
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -record(state, {traces}).
 
@@ -41,6 +53,10 @@
                               [peername," "],
                               []}]},
                        msg,"\n"]}}).
+
+%%------------------------------------------------------------------------------
+%% APIs
+%%------------------------------------------------------------------------------
 
 -spec(start_link() -> {ok, pid()} | ignore | {error, term()}).
 start_link() ->
@@ -96,10 +112,10 @@ handle_call({start_trace, Who, Level, LogFile}, _From, State = #state{traces = T
                                   filters => [{meta_key_filter,
                                                {fun filter_by_meta_key/2, Who} }]}) of
         ok ->
-            emqx_logger:info("[Tracer] start trace for ~p", [Who]),
+            ?LOG(info, "[Tracer] Start trace for ~p", [Who]),
             {reply, ok, State#state{traces = maps:put(Who, {Level, LogFile}, Traces)}};
         {error, Reason} ->
-            emqx_logger:error("[Tracer] start trace for ~p failed, error: ~p", [Who, Reason]),
+            ?LOG(error, "[Tracer] Start trace for ~p failed, error: ~p", [Who, Reason]),
             {reply, {error, Reason}, State}
     end;
 
@@ -108,9 +124,9 @@ handle_call({stop_trace, Who}, _From, State = #state{traces = Traces}) ->
         {ok, _LogFile} ->
             case logger:remove_handler(handler_id(Who)) of
                 ok ->
-                    emqx_logger:info("[Tracer] stop trace for ~p", [Who]);
+                    ?LOG(info, "[Tracer] Stop trace for ~p", [Who]);
                 {error, Reason} ->
-                    emqx_logger:error("[Tracer] stop trace for ~p failed, error: ~p", [Who, Reason])
+                    ?LOG(error, "[Tracer] Stop trace for ~p failed, error: ~p", [Who, Reason])
             end,
             {reply, ok, State#state{traces = maps:remove(Who, Traces)}};
         error ->
@@ -121,15 +137,15 @@ handle_call(lookup_traces, _From, State = #state{traces = Traces}) ->
     {reply, [{Who, LogFile} || {Who, LogFile} <- maps:to_list(Traces)], State};
 
 handle_call(Req, _From, State) ->
-    emqx_logger:error("[Tracer] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Tracer] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    emqx_logger:error("[Tracer] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Tracer] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info(Info, State) ->
-    emqx_logger:error("[Tracer] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Tracer] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

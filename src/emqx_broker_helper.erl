@@ -20,13 +20,24 @@
 -include("types.hrl").
 
 -export([start_link/0]).
--export([register_sub/2]).
--export([lookup_subid/1, lookup_subpid/1]).
--export([get_sub_shard/2]).
--export([create_seq/1, reclaim_seq/1]).
 
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+%% APIs
+-export([ register_sub/2
+        , lookup_subid/1
+        , lookup_subpid/1
+        , get_sub_shard/2
+        , create_seq/1
+        , reclaim_seq/1
+        ]).
+
+%% gen_server callbacks
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -define(HELPER, ?MODULE).
 -define(SUBID, emqx_subid).
@@ -99,7 +110,7 @@ init([]) ->
     {ok, #{pmon => emqx_pmon:new()}}.
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[BrokerHelper] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Broker Helper] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast({register_sub, SubPid, SubId}, State = #{pmon := PMon}) ->
@@ -108,7 +119,7 @@ handle_cast({register_sub, SubPid, SubId}, State = #{pmon := PMon}) ->
     {noreply, State#{pmon := emqx_pmon:monitor(SubPid, PMon)}};
 
 handle_cast(Msg, State) ->
-    ?ERROR("[BrokerHelper] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Broker Helper] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({'DOWN', _MRef, process, SubPid, _Reason}, State = #{pmon := PMon}) ->
@@ -119,7 +130,7 @@ handle_info({'DOWN', _MRef, process, SubPid, _Reason}, State = #{pmon := PMon}) 
     {noreply, State#{pmon := PMon1}};
 
 handle_info(Info, State) ->
-    ?ERROR("[BrokerHelper] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Broker Helper] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

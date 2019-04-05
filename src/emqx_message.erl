@@ -16,14 +16,49 @@
 
 -include("emqx.hrl").
 -include("emqx_mqtt.hrl").
+-include("types.hrl").
 
--export([make/2, make/3, make/4]).
--export([set_flags/2]).
--export([get_flag/2, get_flag/3, set_flag/2, set_flag/3, unset_flag/2]).
--export([set_headers/2]).
--export([get_header/2, get_header/3, set_header/3]).
--export([is_expired/1, update_expiry/1]).
--export([remove_topic_alias/1]).
+%% Create
+-export([ make/2
+        , make/3
+        , make/4
+        ]).
+
+%% Fields
+-export([ id/1
+        , qos/1
+        , from/1
+        , topic/1
+        , payload/1
+        , timestamp/1
+        ]).
+
+%% Flags
+-export([ get_flag/2
+        , get_flag/3
+        , set_flag/2
+        , set_flag/3
+        , set_flags/2
+        , unset_flag/2
+        ]).
+
+%% Headers
+-export([ get_headers/1
+        , get_header/2
+        , get_header/3
+        , set_header/3
+        , set_headers/2
+        , remove_header/2
+        ]).
+
+-export([ is_expired/1
+        , update_expiry/1
+        ]).
+
+-export([ to_map/1
+        , to_list/1
+        ]).
+
 -export([format/1]).
 
 -type(flag() :: atom()).
@@ -32,21 +67,42 @@
 make(Topic, Payload) ->
     make(undefined, Topic, Payload).
 
--spec(make(atom() | emqx_types:client_id(), emqx_topic:topic(), emqx_types:payload())
-      -> emqx_types:message()).
+-spec(make(atom() | emqx_types:client_id(),
+           emqx_topic:topic(),
+           emqx_types:payload()) -> emqx_types:message()).
 make(From, Topic, Payload) ->
     make(From, ?QOS_0, Topic, Payload).
 
--spec(make(atom() | emqx_types:client_id(), emqx_mqtt_types:qos(),
-           emqx_topic:topic(), emqx_types:payload()) -> emqx_types:message()).
-make(From, QoS, Topic, Payload) ->
-    #message{id         = emqx_guid:gen(),
-             qos        = QoS,
-             from       = From,
-             flags      = #{dup => false},
-             topic      = Topic,
-             payload    = Payload,
-             timestamp  = os:timestamp()}.
+-spec(make(atom() | emqx_types:client_id(),
+           emqx_mqtt_types:qos(),
+           emqx_topic:topic(),
+           emqx_types:payload()) -> emqx_types:message()).
+make(From, QoS, Topic, Payload) when ?QOS_0 =< QoS, QoS =< ?QOS_2 ->
+    #message{id = emqx_guid:gen(),
+             qos = QoS,
+             from = From,
+             flags = #{dup => false},
+             topic = Topic,
+             payload = Payload,
+             timestamp = os:timestamp()}.
+
+-spec(id(emqx_types:message()) -> maybe(binary())).
+id(#message{id = Id}) -> Id.
+
+-spec(qos(emqx_types:message()) -> emqx_mqtt_types:qos()).
+qos(#message{qos = QoS}) -> QoS.
+
+-spec(from(emqx_types:message()) -> atom() | binary()).
+from(#message{from = From}) -> From.
+
+-spec(topic(emqx_types:message()) -> emqx_types:topic()).
+topic(#message{topic = Topic}) -> Topic.
+
+-spec(payload(emqx_types:message()) -> emqx_types:payload()).
+payload(#message{payload = Payload}) -> Payload.
+
+-spec(timestamp(emqx_types:message()) -> erlang:timestamp()).
+timestamp(#message{timestamp = TS}) -> TS.
 
 -spec(set_flags(map(), emqx_types:message()) -> emqx_types:message()).
 set_flags(Flags, Msg = #message{flags = undefined}) when is_map(Flags) ->
@@ -81,11 +137,16 @@ unset_flag(Flag, Msg = #message{flags = Flags}) ->
         false -> Msg
     end.
 
--spec(set_headers(map(), emqx_types:message()) -> emqx_types:message()).
+-spec(set_headers(undefined | map(), emqx_types:message()) -> emqx_types:message()).
 set_headers(Headers, Msg = #message{headers = undefined}) when is_map(Headers) ->
     Msg#message{headers = Headers};
 set_headers(New, Msg = #message{headers = Old}) when is_map(New) ->
-    Msg#message{headers = maps:merge(Old, New)}.
+    Msg#message{headers = maps:merge(Old, New)};
+set_headers(undefined, Msg) -> Msg.
+
+-spec(get_headers(emqx_types:message()) -> map()).
+get_headers(Msg) ->
+    Msg#message.headers.
 
 -spec(get_header(term(), emqx_types:message()) -> term()).
 get_header(Hdr, Msg) ->
@@ -100,14 +161,24 @@ set_header(Hdr, Val, Msg = #message{headers = undefined}) ->
 set_header(Hdr, Val, Msg = #message{headers = Headers}) ->
     Msg#message{headers = maps:put(Hdr, Val, Headers)}.
 
+-spec(remove_header(term(), emqx_types:message()) -> emqx_types:message()).
+remove_header(Hdr, Msg = #message{headers = Headers}) ->
+    case maps:is_key(Hdr, Headers) of
+        true ->
+            Msg#message{headers = maps:remove(Hdr, Headers)};
+        false -> Msg
+    end.
+
 -spec(is_expired(emqx_types:message()) -> boolean()).
-is_expired(#message{headers = #{'Message-Expiry-Interval' := Interval}, timestamp = CreatedAt}) ->
+is_expired(#message{headers = #{'Message-Expiry-Interval' := Interval},
+                    timestamp = CreatedAt}) ->
     elapsed(CreatedAt) > timer:seconds(Interval);
 is_expired(_Msg) ->
     false.
 
 -spec(update_expiry(emqx_types:message()) -> emqx_types:message()).
-update_expiry(Msg = #message{headers = #{'Message-Expiry-Interval' := Interval}, timestamp = CreatedAt}) ->
+update_expiry(Msg = #message{headers = #{'Message-Expiry-Interval' := Interval},
+                             timestamp = CreatedAt}) ->
     case elapsed(CreatedAt) of
         Elapsed when Elapsed > 0 ->
             set_header('Message-Expiry-Interval', max(1, Interval - (Elapsed div 1000)), Msg);
@@ -115,8 +186,15 @@ update_expiry(Msg = #message{headers = #{'Message-Expiry-Interval' := Interval},
     end;
 update_expiry(Msg) -> Msg.
 
-remove_topic_alias(Msg = #message{headers = Headers}) ->
-    Msg#message{headers = maps:remove('Topic-Alias', Headers)}.
+%% @doc Message to map
+-spec(to_map(emqx_types:message()) -> map()).
+to_map(Msg) ->
+    maps:from_list(to_list(Msg)).
+
+%% @doc Message to tuple list
+-spec(to_list(emqx_types:message()) -> map()).
+to_list(Msg) ->
+    lists:zip(record_info(fields, message), tl(tuple_to_list(Msg))).
 
 %% MilliSeconds
 elapsed(Since) ->

@@ -16,31 +16,76 @@
 
 -behaviour(gen_statem).
 
+-include("logger.hrl").
 -include("types.hrl").
 -include("emqx_client.hrl").
 
 -export([start_link/0, start_link/1]).
--export([connect/1]).
--export([subscribe/2, subscribe/3, subscribe/4]).
--export([publish/2, publish/3, publish/4, publish/5]).
--export([unsubscribe/2, unsubscribe/3]).
+
+-export([ connect/1
+        , disconnect/1
+        , disconnect/2
+        , disconnect/3
+        ]).
+
 -export([ping/1]).
--export([disconnect/1, disconnect/2, disconnect/3]).
--export([puback/2, puback/3, puback/4]).
--export([pubrec/2, pubrec/3, pubrec/4]).
--export([pubrel/2, pubrel/3, pubrel/4]).
--export([pubcomp/2, pubcomp/3, pubcomp/4]).
+
+%% PubSub
+-export([ subscribe/2
+        , subscribe/3
+        , subscribe/4
+        , publish/2
+        , publish/3
+        , publish/4
+        , publish/5
+        , unsubscribe/2
+        , unsubscribe/3
+        ]).
+
+%% Puback...
+-export([ puback/2
+        , puback/3
+        , puback/4
+        , pubrec/2
+        , pubrec/3
+        , pubrec/4
+        , pubrel/2
+        , pubrel/3
+        , pubrel/4
+        , pubcomp/2
+        , pubcomp/3
+        , pubcomp/4
+        ]).
+
 -export([subscriptions/1]).
+
 -export([info/1, stop/1]).
+
 %% For test cases
 -export([pause/1, resume/1]).
 
--export([initialized/3, waiting_for_connack/3, connected/3, inflight_full/3]).
--export([init/1, callback_mode/0, handle_event/4, terminate/3, code_change/4]).
+-export([ initialized/3
+        , waiting_for_connack/3
+        , connected/3
+        , inflight_full/3
+        ]).
 
--export_type([client/0, properties/0, payload/0, pubopt/0, subopt/0, mqtt_msg/0]).
+-export([ init/1
+        , callback_mode/0
+        , handle_event/4
+        , terminate/3
+        , code_change/4
+        ]).
 
--export_type([host/0, option/0]).
+-export_type([ host/0
+             , client/0
+             , option/0
+             , properties/0
+             , payload/0
+             , pubopt/0
+             , subopt/0
+             , mqtt_msg/0
+             ]).
 
 %% Default timeout
 -define(DEFAULT_KEEPALIVE,       60000).
@@ -742,10 +787,10 @@ connected(cast, ?PUBREC_PACKET(PacketId), State = #state{inflight = Inflight}) -
                         Inflight1 = emqx_inflight:update(PacketId, {pubrel, PacketId, os:timestamp()}, Inflight),
                         State#state{inflight = Inflight1};
                     {value, {pubrel, _Ref, _Ts}} ->
-                        emqx_logger:warning("Duplicated PUBREC Packet: ~p", [PacketId]),
+                        ?LOG(notice, "[Client] Duplicated PUBREC Packet: ~p", [PacketId]),
                         State;
                     none ->
-                        emqx_logger:warning("Unexpected PUBREC Packet: ~p", [PacketId]),
+                        ?LOG(warning, "[Client] Unexpected PUBREC Packet: ~p", [PacketId]),
                         State
                 end);
 
@@ -760,7 +805,7 @@ connected(cast, ?PUBREL_PACKET(PacketId),
                  false -> {keep_state, NewState}
              end;
          error ->
-             emqx_logger:warning("Unexpected PUBREL: ~p", [PacketId]),
+             ?LOG(warning, "[Client] Unexpected PUBREL: ~p", [PacketId]),
              keep_state_and_data
      end;
 
@@ -859,33 +904,33 @@ handle_event({call, From}, stop, _StateName, _State) ->
     {stop_and_reply, normal, [{reply, From, ok}]};
 handle_event(info, {TcpOrSsL, _Sock, Data}, _StateName, State)
     when TcpOrSsL =:= tcp; TcpOrSsL =:= ssl ->
-    emqx_logger:debug("RECV Data: ~p", [Data]),
+    ?LOG(debug, "[Client] RECV Data: ~p", [Data]),
     process_incoming(Data, [], run_sock(State));
 
 handle_event(info, {Error, _Sock, Reason}, _StateName, State)
     when Error =:= tcp_error; Error =:= ssl_error ->
-    emqx_logger:error("[~p] ~p, Reason: ~p", [?MODULE, Error, Reason]),
+    ?LOG(error, "[Client] The connection error occured ~p, reason:~p", [Error, Reason]),
     {stop, {shutdown, Reason}, State};
 
 handle_event(info, {Closed, _Sock}, _StateName, State)
     when Closed =:= tcp_closed; Closed =:= ssl_closed ->
-    emqx_logger:debug("[~p] ~p", [?MODULE, Closed]),
+    ?LOG(debug, "[Client] ~p", [Closed]),
     {stop, {shutdown, Closed}, State};
 
 handle_event(info, {'EXIT', Owner, Reason}, _, State = #state{owner = Owner}) ->
-    emqx_logger:debug("[~p] Got EXIT from owner, Reason: ~p", [?MODULE, Reason]),
+    ?LOG(debug, "[Client] Got EXIT from owner, Reason: ~p", [Reason]),
     {stop, {shutdown, Reason}, State};
 
 handle_event(info, {inet_reply, _Sock, ok}, _, _State) ->
     keep_state_and_data;
 
 handle_event(info, {inet_reply, _Sock, {error, Reason}}, _, State) ->
-    emqx_logger:error("[~p] got tcp error: ~p", [?MODULE, Reason]),
+    ?LOG(error, "[Client] Got tcp error: ~p", [Reason]),
     {stop, {shutdown, Reason}, State};
 
 handle_event(EventType, EventContent, StateName, _StateData) ->
-    emqx_logger:error("State: ~s, Unexpected Event: (~p, ~p)",
-                      [StateName, EventType, EventContent]),
+    ?LOG(error, "[Client] State: ~s, Unexpected Event: (~p, ~p)",
+         [StateName, EventType, EventContent]),
     keep_state_and_data.
 
 %% Mandatory callback functions
@@ -927,7 +972,7 @@ delete_inflight(?PUBACK_PACKET(PacketId, ReasonCode, Properties),
                                                    properties  => Properties}),
             State#state{inflight = emqx_inflight:delete(PacketId, Inflight)};
         none ->
-            emqx_logger:warning("Unexpected PUBACK: ~p", [PacketId]),
+            ?LOG(warning, "[Client] Unexpected PUBACK: ~p", [PacketId]),
             State
     end;
 delete_inflight(?PUBCOMP_PACKET(PacketId, ReasonCode, Properties),
@@ -939,7 +984,7 @@ delete_inflight(?PUBCOMP_PACKET(PacketId, ReasonCode, Properties),
                                                    properties  => Properties}),
             State#state{inflight = emqx_inflight:delete(PacketId, Inflight)};
         none ->
-            emqx_logger:warning("Unexpected PUBCOMP Packet: ~p", [PacketId]),
+            ?LOG(warning, "[Client] Unexpected PUBCOMP Packet: ~p", [PacketId]),
             State
      end.
 
@@ -1142,7 +1187,7 @@ send(Msg, State) when is_record(Msg, mqtt_msg) ->
 send(Packet, State = #state{socket = Sock, proto_ver = Ver})
     when is_record(Packet, mqtt_packet) ->
     Data = emqx_frame:serialize(Packet, #{version => Ver}),
-    emqx_logger:debug("SEND Data: ~1000p", [Packet]),
+    ?LOG(debug, "[Client] SEND Data: ~1000p", [Packet]),
     case emqx_client_sock:send(Sock, Data) of
         ok  -> {ok, bump_last_packet_id(State)};
         Error -> Error
@@ -1186,3 +1231,4 @@ bump_last_packet_id(State = #state{last_packet_id = Id}) ->
 -spec next_packet_id(packet_id()) -> packet_id().
 next_packet_id(?MAX_PACKET_ID) -> 1;
 next_packet_id(Id) -> Id + 1.
+

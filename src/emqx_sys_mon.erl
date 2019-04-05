@@ -20,10 +20,18 @@
 -include("types.hrl").
 
 -export([start_link/1]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+
 %% compress unused warning
 -export([procinfo/1]).
+
+%% gen_server callbacks
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -type(option() :: {long_gc, false | pos_integer()}
                 | {long_schedule, false | pos_integer()}
@@ -32,6 +40,10 @@
                 | {busy_dist_port, boolean()}).
 
 -define(SYSMON, ?MODULE).
+
+%%------------------------------------------------------------------------------
+%% APIs
+%%------------------------------------------------------------------------------
 
 %% @doc Start system monitor
 -spec(start_link(list(option())) -> startlink_ret()).
@@ -76,18 +88,18 @@ parse_opt([_Opt|Opts], Acc) ->
     parse_opt(Opts, Acc).
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[SYSMON] unexpected call: ~p", [Req]),
+    ?LOG(error, "[SYSMON] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?ERROR("[SYSMON] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[SYSMON] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({monitor, Pid, long_gc, Info}, State) ->
     suppress({long_gc, Pid},
              fun() ->
                  WarnMsg = io_lib:format("long_gc warning: pid = ~p, info: ~p", [Pid, Info]),
-                 ?WARN("[SYSMON] ~s~n~p", [WarnMsg, procinfo(Pid)]),
+                 ?LOG(warning, "[SYSMON] ~s~n~p", [WarnMsg, procinfo(Pid)]),
                  safe_publish(long_gc, WarnMsg)
              end, State);
 
@@ -95,7 +107,7 @@ handle_info({monitor, Pid, long_schedule, Info}, State) when is_pid(Pid) ->
     suppress({long_schedule, Pid},
              fun() ->
                  WarnMsg = io_lib:format("long_schedule warning: pid = ~p, info: ~p", [Pid, Info]),
-                 ?WARN("[SYSMON] ~s~n~p", [WarnMsg, procinfo(Pid)]),
+                 ?LOG(warning, "[SYSMON] ~s~n~p", [WarnMsg, procinfo(Pid)]),
                  safe_publish(long_schedule, WarnMsg)
              end, State);
 
@@ -103,7 +115,7 @@ handle_info({monitor, Port, long_schedule, Info}, State) when is_port(Port) ->
     suppress({long_schedule, Port},
              fun() ->
                  WarnMsg = io_lib:format("long_schedule warning: port = ~p, info: ~p", [Port, Info]),
-                 ?WARN("[SYSMON] ~s~n~p", [WarnMsg, erlang:port_info(Port)]),
+                 ?LOG(warning, "[SYSMON] ~s~n~p", [WarnMsg, erlang:port_info(Port)]),
                  safe_publish(long_schedule, WarnMsg)
              end, State);
 
@@ -111,7 +123,7 @@ handle_info({monitor, Pid, large_heap, Info}, State) ->
     suppress({large_heap, Pid},
              fun() ->
                  WarnMsg = io_lib:format("large_heap warning: pid = ~p, info: ~p", [Pid, Info]),
-                 ?WARN("[SYSMON] ~s~n~p", [WarnMsg, procinfo(Pid)]),
+                 ?LOG(warning, "[SYSMON] ~s~n~p", [WarnMsg, procinfo(Pid)]),
                  safe_publish(large_heap, WarnMsg)
              end, State);
 
@@ -119,7 +131,7 @@ handle_info({monitor, SusPid, busy_port, Port}, State) ->
     suppress({busy_port, Port},
              fun() ->
                  WarnMsg = io_lib:format("busy_port warning: suspid = ~p, port = ~p", [SusPid, Port]),
-                 ?WARN("[SYSMON] ~s~n~p~n~p", [WarnMsg, procinfo(SusPid), erlang:port_info(Port)]),
+                 ?LOG(warning, "[SYSMON] ~s~n~p~n~p", [WarnMsg, procinfo(SusPid), erlang:port_info(Port)]),
                  safe_publish(busy_port, WarnMsg)
              end, State);
 
@@ -127,7 +139,7 @@ handle_info({monitor, SusPid, busy_dist_port, Port}, State) ->
     suppress({busy_dist_port, Port},
              fun() ->
                  WarnMsg = io_lib:format("busy_dist_port warning: suspid = ~p, port = ~p", [SusPid, Port]),
-                 ?WARN("[SYSMON] ~s~n~p~n~p", [WarnMsg, procinfo(SusPid), erlang:port_info(Port)]),
+                 ?LOG(warning, "[SYSMON] ~s~n~p~n~p", [WarnMsg, procinfo(SusPid), erlang:port_info(Port)]),
                  safe_publish(busy_dist_port, WarnMsg)
              end, State);
 
@@ -135,7 +147,7 @@ handle_info({timeout, _Ref, reset}, State) ->
     {noreply, State#{events := []}, hibernate};
 
 handle_info(Info, State) ->
-    ?ERROR("[SYSMON] unexpected Info: ~p", [Info]),
+    ?LOG(error, "[SYSMON] Unexpected Info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #{timer := TRef}) ->

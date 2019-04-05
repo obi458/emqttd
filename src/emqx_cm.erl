@@ -22,17 +22,34 @@
 
 -export([start_link/0]).
 
--export([register_connection/1, register_connection/2]).
--export([unregister_connection/1, unregister_connection/2]).
--export([get_conn_attrs/1, get_conn_attrs/2]).
--export([set_conn_attrs/2, set_conn_attrs/3]).
--export([get_conn_stats/1, get_conn_stats/2]).
--export([set_conn_stats/2, set_conn_stats/3]).
+-export([ register_connection/1
+        , register_connection/2
+        , unregister_connection/1
+        , unregister_connection/2
+        ]).
+
+-export([ get_conn_attrs/1
+        , get_conn_attrs/2
+        , set_conn_attrs/2
+        , set_conn_attrs/3
+        ]).
+
+-export([ get_conn_stats/1
+        , get_conn_stats/2
+        , set_conn_stats/2
+        , set_conn_stats/3
+        ]).
+
 -export([lookup_conn_pid/1]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 %% internal export
 -export([stats_fun/0]).
@@ -142,7 +159,7 @@ init([]) ->
     {ok, #{conn_pmon => emqx_pmon:new()}}.
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[CM] unexpected call: ~p", [Req]),
+    ?LOG(error, "[CM] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast({notify, {registered, ClientId, ConnPid}}, State = #{conn_pmon := PMon}) ->
@@ -152,7 +169,7 @@ handle_cast({notify, {unregistered, ConnPid}}, State = #{conn_pmon := PMon}) ->
     {noreply, State#{conn_pmon := emqx_pmon:demonitor(ConnPid, PMon)}};
 
 handle_cast(Msg, State) ->
-    ?ERROR("[CM] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[CM] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, State = #{conn_pmon := PMon}) ->
@@ -163,7 +180,7 @@ handle_info({'DOWN', _MRef, process, Pid, _Reason}, State = #{conn_pmon := PMon}
     {noreply, State#{conn_pmon := PMon1}};
 
 handle_info(Info, State) ->
-    ?ERROR("[CM] unexpected info: ~p", [Info]),
+    ?LOG(error, "[CM] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

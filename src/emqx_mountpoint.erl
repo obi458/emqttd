@@ -17,11 +17,19 @@
 -include("emqx.hrl").
 -include("logger.hrl").
 
--export([mount/2, unmount/2]).
+-export([ mount/2
+        , unmount/2
+        ]).
+
 -export([replvar/2]).
 
 -type(mountpoint() :: binary()).
+
 -export_type([mountpoint/0]).
+
+%%------------------------------------------------------------------------------
+%% APIs
+%%------------------------------------------------------------------------------
 
 mount(undefined, Any) ->
     Any;
@@ -38,7 +46,7 @@ unmount(MountPoint, Msg = #message{topic = Topic}) ->
         {MountPoint, Topic1} -> Msg#message{topic = Topic1}
     catch
         _Error:Reason ->
-            ?LOG(error, "Unmount error : ~p", [Reason]),
+            ?LOG(error, "[Mountpoint] Unmount error : ~p", [Reason]),
             Msg
     end.
 
@@ -53,3 +61,4 @@ feed_var({<<"%u">>, undefined}, MountPoint) ->
     MountPoint;
 feed_var({<<"%u">>, Username}, MountPoint) ->
     emqx_topic:feed_var(<<"%u">>, Username, MountPoint).
+

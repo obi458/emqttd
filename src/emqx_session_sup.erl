@@ -20,20 +20,28 @@
 -include("types.hrl").
 
 -export([start_link/1]).
--export([start_session/1, count_sessions/0]).
+
+-export([ start_session/1
+        , count_sessions/0
+        ]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -type(shutdown() :: brutal_kill | infinity | pos_integer()).
 
--record(state, {
-          sessions :: #{pid() => emqx_types:client_id()},
-          mfargs :: mfa(),
-          shutdown :: shutdown(),
-          clean_down :: fun()
-         }).
+-record(state,
+        { sessions :: #{pid() => emqx_types:client_id()}
+        , mfargs :: mfa()
+        , shutdown :: shutdown()
+        , clean_down :: fun()
+        }).
 
 -define(SUP, ?MODULE).
 -define(BATCH_EXIT, 100000).
@@ -84,7 +92,7 @@ handle_call({start_session, SessAttrs = #{client_id := ClientId}}, _From,
             reply({error, Reason}, State)
     catch
         _:Error:Stk ->
-            ?ERROR("Failed to start session ~p: ~p, stacktrace:~n~p",
+            ?LOG(error, "[Session Supervisor] Failed to start session ~p: ~p, stacktrace:~n~p",
                    [ClientId, Error, Stk]),
             reply({error, Error}, State)
     end;
@@ -93,11 +101,11 @@ handle_call(count_sessions, _From, State = #state{sessions = SessMap}) ->
     {reply, maps:size(SessMap), State};
 
 handle_call(Req, _From, State) ->
-    ?ERROR("unexpected call: ~p", [Req]),
+    ?LOG(error, "[Session Supervisor] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?ERROR("unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Session Supervisor] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({'EXIT', Pid, _Reason}, State = #state{sessions = SessMap, clean_down = CleanDown}) ->
@@ -109,7 +117,7 @@ handle_info({'EXIT', Pid, _Reason}, State = #state{sessions = SessMap, clean_dow
     {noreply, State#state{sessions = SessMap1}};
 
 handle_info(Info, State) ->
-    ?ERROR("unexpected info: ~p", [Info]),
+    ?LOG(notice, "[Session Supervisor] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, State) ->

@@ -16,6 +16,13 @@
 
 -include("emqx.hrl").
 
+%% APIs
+-export([ match/3
+        , compile/1
+        ]).
+
+-type(acl_result() :: allow | deny).
+
 -type(who() :: all | binary() |
                {client, binary()} |
                {user, binary()} |
@@ -23,18 +30,17 @@
 
 -type(access() :: subscribe | publish | pubsub).
 
--type(rule() :: {allow, all} |
-                {allow, who(), access(), list(emqx_topic:topic())} |
-                {deny, all} |
-                {deny, who(), access(), list(emqx_topic:topic())}).
+-type(rule() :: {acl_result(), all} |
+                {acl_result(), who(), access(), list(emqx_topic:topic())}).
 
 -export_type([rule/0]).
 
--export([compile/1]).
--export([match/3]).
-
 -define(ALLOW_DENY(A), ((A =:= allow) orelse (A =:= deny))).
 -define(PUBSUB(A), ((A =:= subscribe) orelse (A =:= publish) orelse (A =:= pubsub))).
+
+%%------------------------------------------------------------------------------
+%% APIs
+%%------------------------------------------------------------------------------
 
 %% @doc Compile Access Rule.
 compile({A, all}) when ?ALLOW_DENY(A) ->

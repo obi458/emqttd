@@ -30,19 +30,38 @@
 -export([start_link/2]).
 
 %% Route APIs
--export([add_route/1, add_route/2]).
--export([do_add_route/1, do_add_route/2]).
--export([match_routes/1, lookup_routes/1, has_routes/1]).
--export([delete_route/1, delete_route/2]).
--export([do_delete_route/1, do_delete_route/2]).
+-export([ add_route/1
+        , add_route/2
+        , do_add_route/1
+        , do_add_route/2
+        ]).
+
+-export([ delete_route/1
+        , delete_route/2
+        , do_delete_route/1
+        , do_delete_route/2
+        ]).
+
+-export([ match_routes/1
+        , lookup_routes/1
+        , has_routes/1
+        ]).
+
 -export([print_routes/1]).
+
 -export([topics/0]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -type(group() :: binary()).
+
 -type(destination() :: node() | {group(), node()}).
 
 -define(ROUTE, emqx_route).
@@ -179,15 +198,15 @@ handle_call({delete_route, Topic, Dest}, _From, State) ->
     {reply, Ok, State};
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[Router] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Router] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?ERROR("[Router] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Router] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info(Info, State) ->
-    ?ERROR("[Router] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Router] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #{pool := Pool, id := Id}) ->

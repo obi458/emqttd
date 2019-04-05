@@ -19,11 +19,25 @@
 -include("logger.hrl").
 
 -export([start_link/0]).
--export([register_command/2, register_command/3, unregister_command/1]).
--export([run_command/1, run_command/2, lookup_command/1]).
 
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ register_command/2
+        , register_command/3
+        , unregister_command/1
+        ]).
+
+-export([ run_command/1
+        , run_command/2
+        , lookup_command/1
+        ]).
+
+%% gen_server callbacks
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -record(state, {seq = 0}).
 
@@ -93,14 +107,14 @@ init([]) ->
     {ok, #state{seq = 0}}.
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[Ctl] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Ctl] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast({register_command, Cmd, MF, Opts}, State = #state{seq = Seq}) ->
     case ets:match(?TAB, {{'$1', Cmd}, '_', '_'}) of
         [] -> ets:insert(?TAB, {{Seq, Cmd}, MF, Opts});
         [[OriginSeq] | _] ->
-            ?WARN("[Ctl] cmd ~s is overidden by ~p", [Cmd, MF]),
+            ?LOG(warning, "[Ctl] CMD ~s is overidden by ~p", [Cmd, MF]),
             ets:insert(?TAB, {{OriginSeq, Cmd}, MF, Opts})
     end,
     noreply(next_seq(State));
@@ -110,11 +124,11 @@ handle_cast({unregister_command, Cmd}, State) ->
     noreply(State);
 
 handle_cast(Msg, State) ->
-    ?ERROR("[Ctl] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Ctl] Unexpected cast: ~p", [Msg]),
     noreply(State).
 
 handle_info(Info, State) ->
-    ?ERROR("[Ctl] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Ctl] Unexpected info: ~p", [Info]),
     noreply(State).
 
 terminate(_Reason, _State) ->

@@ -16,7 +16,11 @@
 
 -behaviour(supervisor).
 
--export([start_link/0, start_child/1, start_child/2, stop_child/1]).
+-export([ start_link/0
+        , start_child/1
+        , start_child/2
+        , stop_child/1
+        ]).
 
 -export([init/1]).
 
@@ -26,12 +30,12 @@
 
 -define(SUPERVISOR, ?MODULE).
 
-start_link() ->
-    supervisor:start_link({local, ?SUPERVISOR}, ?MODULE, []).
-
 %%--------------------------------------------------------------------
 %% API
 %%--------------------------------------------------------------------
+
+start_link() ->
+    supervisor:start_link({local, ?SUPERVISOR}, ?MODULE, []).
 
 -spec(start_child(supervisor:child_spec()) -> startchild_ret()).
 start_child(ChildSpec) when is_tuple(ChildSpec) ->
@@ -62,8 +66,6 @@ init([]) ->
     %% Broker Sup
     BrokerSup = supervisor_spec(emqx_broker_sup),
     BridgeSup = supervisor_spec(emqx_bridge_sup),
-    %% AccessControl
-    AccessControl = worker_spec(emqx_access_control),
     %% Session Manager
     SMSup = supervisor_spec(emqx_sm_sup),
     %% Connection Manager
@@ -75,7 +77,6 @@ init([]) ->
            RouterSup,
            BrokerSup,
            BridgeSup,
-           AccessControl,
            SMSup,
            CMSup,
            SysSup]}}.

@@ -17,12 +17,23 @@
 -behaviour(emqx_gen_mod).
 
 -include("emqx.hrl").
+-include("logger.hrl").
 
--export([load/1, unload/1]).
+%% APIs
+-export([ on_client_connected/4
+        , on_client_disconnected/3
+        ]).
 
--export([on_client_connected/4, on_client_disconnected/3]).
+%% emqx_gen_mod callbacks
+-export([ load/1
+        , unload/1
+        ]).
 
 -define(ATTR_KEYS, [clean_start, proto_ver, proto_name, keepalive]).
+
+%%------------------------------------------------------------------------------
+%% APIs
+%%------------------------------------------------------------------------------
 
 load(Env) ->
     emqx_hooks:add('client.connected',    fun ?MODULE:on_client_connected/4, [Env]),
@@ -40,7 +51,7 @@ on_client_connected(#{client_id := ClientId,
         {ok, Payload} ->
             emqx:publish(message(qos(Env), topic(connected, ClientId), Payload));
         {error, Reason} ->
-            emqx_logger:error("[Presence Module] Json error: ~p", [Reason])
+            ?LOG(error, "[Presence] Encoding connected event error: ~p", [Reason])
     end.
 
 on_client_disconnected(#{client_id := ClientId, username := Username}, Reason, Env) ->
@@ -51,7 +62,7 @@ on_client_disconnected(#{client_id := ClientId, username := Username}, Reason, E
         {ok, Payload} ->
             emqx_broker:publish(message(qos(Env), topic(disconnected, ClientId), Payload));
         {error, Reason} ->
-            emqx_logger:error("[Presence Module] Json error: ~p", [Reason])
+            ?LOG(error, "[Presence] Encoding disconnected event error: ~p", [Reason])
     end.
 
 unload(_Env) ->

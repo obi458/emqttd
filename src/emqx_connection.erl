@@ -21,15 +21,28 @@
 -include("logger.hrl").
 
 -export([start_link/3]).
+
+%% APIs
 -export([info/1]).
+
 -export([attrs/1]).
+
 -export([stats/1]).
+
 -export([kick/1]).
+
 -export([session/1]).
 
 %% gen_statem callbacks
--export([idle/3, connected/3]).
--export([init/1, callback_mode/0, code_change/4, terminate/3]).
+-export([ idle/3
+        , connected/3
+        ]).
+
+-export([ init/1
+        , callback_mode/0
+        , code_change/4
+        , terminate/3
+        ]).
 
 -record(state, {
           transport,
@@ -141,7 +154,15 @@ init({Transport, RawSocket, Options}) ->
     ActiveN = proplists:get_value(active_n, Options, ?ACTIVE_N),
     EnableStats = emqx_zone:get_env(Zone, enable_stats, true),
     IdleTimout = emqx_zone:get_env(Zone, idle_timeout, 30000),
-    SendFun = fun(Data) -> Transport:async_send(Socket, Data) end,
+    SendFun = fun(Packet, SeriaOpts) ->
+                      Data = emqx_frame:serialize(Packet, SeriaOpts),
+                      case Transport:async_send(Socket, Data) of
+                          ok ->
+                              {ok, Data};
+                          {error, Reason} ->
+                              {error, Reason}
+                      end
+              end,
     ProtoState = emqx_protocol:init(#{peername => Peername,
                                       sockname => Sockname,
                                       peercert => Peercert,
@@ -184,10 +205,10 @@ idle(enter, _, State) ->
 idle(timeout, _Timeout, State) ->
     {stop, idle_timeout, State};
 
-idle(cast, {incoming, Packet, PState}, _State) ->
+idle(cast, {incoming, Packet}, State) ->
     handle_packet(Packet, fun(NState) ->
                               {next_state, connected, reset_parser(NState)}
-                          end, PState);
+                          end, State);
 
 idle(EventType, Content, State) ->
     ?HANDLE(EventType, Content, State).
@@ -200,12 +221,12 @@ connected(enter, _, _State) ->
     keep_state_and_data;
 
 %% Handle Input
-connected(cast, {incoming, Packet = ?PACKET(Type), PState}, _State) ->
+connected(cast, {incoming, Packet = ?PACKET(Type)}, State) ->
     _ = emqx_metrics:received(Packet),
     (Type == ?PUBLISH) andalso emqx_pd:update_counter(incoming_pubs, 1),
     handle_packet(Packet, fun(NState) ->
-                              {keep_state, reset_parser(NState)}
-                          end, PState);
+                              {keep_state, NState}
+                          end, State);
 
 %% Handle Output
 connected(info, {deliver, PubOrAck}, State = #state{proto_state = ProtoState}) ->
@@ -265,18 +286,18 @@ handle({call, From}, session, State = #state{proto_state = ProtoState}) ->
     reply(From, emqx_protocol:session(ProtoState), State);
 
 handle({call, From}, Req, State) ->
-    ?LOG(error, "unexpected call: ~p", [Req]),
+    ?LOG(error, "[Connection] Unexpected call: ~p", [Req]),
     reply(From, ignored, State);
 
 %% Handle cast
 handle(cast, Msg, State) ->
-    ?LOG(error, "unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Connection] Unexpected cast: ~p", [Msg]),
     {keep_state, State};
 
 %% Handle Incoming
 handle(info, {Inet, _Sock, Data}, State) when Inet == tcp; Inet == ssl ->
     Oct = iolist_size(Data),
-    ?LOG(debug, "RECV ~p", [Data]),
+    ?LOG(debug, "[Connection] RECV ~p", [Data]),
     emqx_pd:update_counter(incoming_bytes, Oct),
     emqx_metrics:trans(inc, 'bytes/received', Oct),
     NState = ensure_stats_timer(maybe_gc({1, Oct}, State)),
@@ -324,23 +345,23 @@ handle(info, {timeout, Timer, emit_stats},
             GcState1 = emqx_gc:reset(GcState),
             {keep_state, NState#state{gc_state = GcState1}, hibernate};
         {shutdown, Reason} ->
-            ?LOG(warning, "shutdown due to ~p", [Reason]),
+            ?LOG(error, "[Connection] Shutdown exceptionally due to ~p", [Reason]),
             shutdown(Reason, NState)
     end;
 
 handle(info, {shutdown, discard, {ClientId, ByPid}}, State) ->
-    ?LOG(warning, "discarded by ~s:~p", [ClientId, ByPid]),
+    ?LOG(error, "[Connection] Discarded by ~s:~p", [ClientId, ByPid]),
     shutdown(discard, State);
 
 handle(info, {shutdown, conflict, {ClientId, NewPid}}, State) ->
-    ?LOG(warning, "clientid '~s' conflict with ~p", [ClientId, NewPid]),
+    ?LOG(warning, "[Connection] Clientid '~s' conflict with ~p", [ClientId, NewPid]),
     shutdown(conflict, State);
 
 handle(info, {shutdown, Reason}, State) ->
     shutdown(Reason, State);
 
 handle(info, Info, State) ->
-    ?LOG(error, "unexpected info: ~p", [Info]),
+    ?LOG(error, "[Connection] Unexpected info: ~p", [Info]),
     {keep_state, State}.
 
 code_change(_Vsn, State, Data, _Extra) ->
@@ -350,7 +371,7 @@ terminate(Reason, _StateName, #state{transport = Transport,
                                      socket = Socket,
                                      keepalive = KeepAlive,
                                      proto_state = ProtoState}) ->
-    ?LOG(debug, "Terminated for ~p", [Reason]),
+    ?LOG(debug, "[Connection] Terminated for ~p", [Reason]),
     Transport:fast_close(Socket),
     emqx_keepalive:cancel(KeepAlive),
     case {ProtoState, Reason} of
@@ -365,31 +386,29 @@ terminate(Reason, _StateName, #state{transport = Transport,
 %% Process incoming data
 
 process_incoming(<<>>, Packets, State) ->
-    {keep_state, State, next_events({Packets, State})};
+    {keep_state, State, next_events(Packets)};
 
 process_incoming(Data, Packets, State = #state{parse_state = ParseState}) ->
     try emqx_frame:parse(Data, ParseState) of
         {ok, Packet, Rest} ->
             process_incoming(Rest, [Packet|Packets], reset_parser(State));
         {more, NewParseState} ->
-            {keep_state, State#state{parse_state = NewParseState}, next_events({Packets, State})};
+            {keep_state, State#state{parse_state = NewParseState}, next_events(Packets)};
         {error, Reason} ->
             shutdown(Reason, State)
     catch
         _:Error:Stk->
-            ?LOG(error, "Parse failed for ~p~nStacktrace:~p~nError data:~p", [Error, Stk, Data]),
+            ?LOG(error, "[Connection] Parse failed for ~p~nStacktrace:~p~nError data:~p", [Error, Stk, Data]),
             shutdown(Error, State)
     end.
 
 reset_parser(State = #state{proto_state = ProtoState}) ->
     State#state{parse_state = emqx_protocol:parser(ProtoState)}.
 
-next_events([]) ->
-    [];
-next_events([{Packet, State}]) ->
-    {next_event, cast, {incoming, Packet, State}};
-next_events({Packets, State}) ->
-    [next_events([{Packet, State}]) || Packet <- lists:reverse(Packets)].
+next_events(Packets) when is_list(Packets) ->
+    [next_events(Packet) || Packet <- lists:reverse(Packets)];
+next_events(Packet) ->
+    {next_event, cast, {incoming, Packet}}.
 
 %%------------------------------------------------------------------------------
 %% Handle incoming packet
@@ -484,4 +503,3 @@ shutdown(Reason, State) ->
 
 stop(Reason, State) ->
     {stop, Reason, State}.
-

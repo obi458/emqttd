@@ -27,11 +27,20 @@
 -copy_mnesia({mnesia, [copy]}).
 
 -export([start_link/0]).
--export([check/1]).
--export([add/1, delete/1]).
 
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ add/1
+        , delete/1
+        , check/1
+        ]).
+
+%% gen_server callbacks
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -define(TAB, ?MODULE).
 
@@ -79,11 +88,11 @@ init([]) ->
     {ok, ensure_expiry_timer(#{expiry_timer => undefined})}.
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[Banned] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Banned] unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?ERROR("[Banned] unexpected msg: ~p", [Msg]),
+    ?LOG(error, "[Banned] unexpected msg: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({timeout, TRef, expire}, State = #{expiry_timer := TRef}) ->
@@ -91,7 +100,7 @@ handle_info({timeout, TRef, expire}, State = #{expiry_timer := TRef}) ->
     {noreply, ensure_expiry_timer(State), hibernate};
 
 handle_info(Info, State) ->
-    ?ERROR("[Banned] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Banned] unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #{expiry_timer := TRef}) ->

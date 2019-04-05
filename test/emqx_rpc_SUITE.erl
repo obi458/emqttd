@@ -12,30 +12,25 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 
--module(emqx_auth_mod).
+-module(emqx_rpc_SUITE).
 
 -include("emqx.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
-%%--------------------------------------------------------------------
-%% Authentication behavihour
-%%--------------------------------------------------------------------
+-compile(export_all).
+-compile(nowarn_export_all).
+-define(MASTER, 'emqxct@127.0.0.1').
 
--ifdef(use_specs).
+all() -> [t_rpc].
 
--callback(init(AuthOpts :: list()) -> {ok, State :: term()}).
+init_per_suite(Config) ->
+    emqx_ct_broker_helpers:run_setup_steps(),
+    Config.
 
--callback(check(credentials(), password(), State :: term())
-          -> ok | {ok, boolean()} | {ok, map()} |
-             {continue, map()} | ignore | {error, term()}).
--callback(description() -> string()).
+end_per_suite(_Config) ->
+    emqx_ct_broker_helpers:run_teardown_steps().
 
--else.
-
--export([behaviour_info/1]).
-
-behaviour_info(callbacks) ->
-    [{init, 1}, {check, 3}, {description, 0}];
-behaviour_info(_Other) ->
-    undefined.
-
--endif.
+t_rpc(_) ->
+    60000 = emqx_rpc:call(?MASTER, timer, seconds, [60]),
+    {badrpc, _} = emqx_rpc:call(?MASTER, os, test, []),
+    {_, []} = emqx_rpc:multicall([?MASTER, ?MASTER], os, timestamp, []).

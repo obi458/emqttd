@@ -15,24 +15,47 @@
 -module(emqx).
 
 -include("emqx.hrl").
+-include("logger.hrl").
 -include("types.hrl").
 
 %% Start/Stop the application
--export([start/0, restart/1, is_running/1, stop/0]).
+-export([ start/0
+        , restart/1
+        , is_running/1
+        , stop/0
+        ]).
 
 %% PubSub API
--export([subscribe/1, subscribe/2, subscribe/3]).
+-export([ subscribe/1
+        , subscribe/2
+        , subscribe/3
+        ]).
+
 -export([publish/1]).
+
 -export([unsubscribe/1]).
 
 %% PubSub management API
--export([topics/0, subscriptions/1, subscribers/1, subscribed/2]).
+-export([ topics/0
+        , subscriptions/1
+        , subscribers/1
+        , subscribed/2
+        ]).
 
 %% Hooks API
--export([hook/2, hook/3, hook/4, unhook/2, run_hooks/2, run_hooks/3]).
+-export([ hook/2
+        , hook/3
+        , hook/4
+        , unhook/2
+        , run_hook/2
+        , run_fold_hook/3
+        ]).
 
 %% Shutdown and reboot
--export([shutdown/0, shutdown/1, reboot/0]).
+-export([ shutdown/0
+        , shutdown/1
+        , reboot/0
+        ]).
 
 -define(APP, ?MODULE).
 
@@ -142,13 +165,13 @@ hook(HookPoint, Action, Filter, Priority) ->
 unhook(HookPoint, Action) ->
     emqx_hooks:del(HookPoint, Action).
 
--spec(run_hooks(emqx_hooks:hookpoint(), list(any())) -> ok | stop).
-run_hooks(HookPoint, Args) ->
+-spec(run_hook(emqx_hooks:hookpoint(), list(any())) -> ok | stop).
+run_hook(HookPoint, Args) ->
     emqx_hooks:run(HookPoint, Args).
 
--spec(run_hooks(emqx_hooks:hookpoint(), list(any()), any()) -> {ok | stop, any()}).
-run_hooks(HookPoint, Args, Acc) ->
-    emqx_hooks:run(HookPoint, Args, Acc).
+-spec(run_fold_hook(emqx_hooks:hookpoint(), list(any()), any()) -> any()).
+run_fold_hook(HookPoint, Args, Acc) ->
+    emqx_hooks:run_fold(HookPoint, Args, Acc).
 
 %%------------------------------------------------------------------------------
 %% Shutdown and reboot
@@ -158,7 +181,7 @@ shutdown() ->
     shutdown(normal).
 
 shutdown(Reason) ->
-    emqx_logger:error("emqx shutdown for ~s", [Reason]),
+    ?LOG(critical, "[EMQ X] emqx shutdown for ~s", [Reason]),
     emqx_alarm_handler:unload(),
     emqx_plugins:unload(),
     lists:foreach(fun application:stop/1, [emqx, ekka, cowboy, ranch, esockd, gproc]).

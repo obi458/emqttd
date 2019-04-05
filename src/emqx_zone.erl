@@ -20,19 +20,33 @@
 -include("logger.hrl").
 -include("types.hrl").
 
+%% APIs
 -export([start_link/0]).
--export([get_env/2, get_env/3]).
--export([set_env/3]).
--export([force_reload/0]).
+
+-export([ get_env/2
+        , get_env/3
+        , set_env/3
+        , force_reload/0
+        ]).
+
 %% for test
 -export([stop/0]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -define(TAB, ?MODULE).
 -define(SERVER, ?MODULE).
+
+%%------------------------------------------------------------------------------
+%% APIs
+%%------------------------------------------------------------------------------
 
 -spec(start_link() -> startlink_ret()).
 start_link() ->
@@ -78,7 +92,7 @@ handle_call(force_reload, _From, State) ->
     {reply, ok, State};
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[Zone] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Zone] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast({set_env, Zone, Key, Val}, State) ->
@@ -86,7 +100,7 @@ handle_cast({set_env, Zone, Key, Val}, State) ->
     {noreply, State};
 
 handle_cast(Msg, State) ->
-    ?ERROR("[Zone] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Zone] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info(reload, State) ->
@@ -94,7 +108,7 @@ handle_info(reload, State) ->
     {noreply, ensure_reload_timer(State#{timer := undefined}), hibernate};
 
 handle_info(Info, State) ->
-    ?ERROR("[Zone] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Zone] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

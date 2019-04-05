@@ -21,21 +21,46 @@
 -include("types.hrl").
 
 -export([start_link/2]).
--export([subscribe/1, subscribe/2, subscribe/3]).
+
+%% PubSub
+-export([ subscribe/1
+        , subscribe/2
+        , subscribe/3
+        ]).
+
 -export([unsubscribe/1]).
+
 -export([subscriber_down/1]).
--export([publish/1, safe_publish/1]).
+
+-export([ publish/1
+        , safe_publish/1
+        ]).
+
 -export([dispatch/2]).
--export([subscriptions/1, subscribers/1, subscribed/2]).
--export([get_subopts/2, set_subopts/2]).
+
+%% PubSub Infos
+-export([ subscriptions/1
+        , subscribers/1
+        , subscribed/2
+        ]).
+
+-export([ get_subopts/2
+        , set_subopts/2
+        ]).
+
 -export([topics/0]).
 
 %% Stats fun
 -export([stats_fun/0]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -import(emqx_tables, [lookup_value/2, lookup_value/3]).
 
@@ -167,13 +192,14 @@ do_unsubscribe(Group, Topic, SubPid, _SubOpts) ->
 -spec(publish(emqx_types:message()) -> emqx_types:deliver_results()).
 publish(Msg) when is_record(Msg, message) ->
     _ = emqx_tracer:trace(publish, Msg),
-    case emqx_hooks:run('message.publish', [], Msg) of
-        {ok, Msg1 = #message{topic = Topic}} ->
+    Headers = Msg#message.headers,
+    case emqx_hooks:run_fold('message.publish', [], Msg#message{headers = Headers#{allow_publish => true}}) of
+        #message{headers = #{allow_publish := false}} ->
+            ?LOG(notice, "[Broker] Publishing interrupted: ~s", [emqx_message:format(Msg)]),
+            [];
+        #message{topic = Topic} = Msg1 ->
             Delivery = route(aggre(emqx_router:match_routes(Topic)), delivery(Msg1)),
-            Delivery#delivery.results;
-        {stop, _} ->
-            ?WARN("Stop publishing: ~s", [emqx_message:format(Msg)]),
-            []
+            Delivery#delivery.results
     end.
 
 %% Called internally
@@ -183,7 +209,7 @@ safe_publish(Msg) when is_record(Msg, message) ->
         publish(Msg)
     catch
         _:Error:Stacktrace ->
-            ?ERROR("[Broker] publish error: ~p~n~p~n~p", [Error, Msg, Stacktrace])
+            ?LOG(error, "[Broker] Publish error: ~p~n~p~n~p", [Error, Msg, Stacktrace])
     after
         ok
     end.
@@ -230,7 +256,7 @@ forward(Node, To, Delivery) ->
     %% rpc:call to ensure the delivery, but the latency:(
     case emqx_rpc:call(Node, ?BROKER, dispatch, [To, Delivery]) of
         {badrpc, Reason} ->
-            ?ERROR("[Broker] Failed to forward msg to ~s: ~p", [Node, Reason]),
+            ?LOG(error, "[Broker] Failed to forward msg to ~s: ~p", [Node, Reason]),
             Delivery;
         Delivery1 -> Delivery1
     end.
@@ -398,14 +424,14 @@ handle_call({subscribe, Topic, I}, _From, State) ->
     {reply, Ok, State};
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[Broker] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Broker] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast({subscribe, Topic}, State) ->
     case emqx_router:do_add_route(Topic) of
         ok -> ok;
         {error, Reason} ->
-            ?ERROR("[Broker] Failed to add route: ~p", [Reason])
+            ?LOG(error, "[Broker] Failed to add route: ~p", [Reason])
     end,
     {noreply, State};
 
@@ -428,11 +454,11 @@ handle_cast({unsubscribed, Topic, I}, State) ->
     {noreply, State};
 
 handle_cast(Msg, State) ->
-    ?ERROR("[Broker] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Broker] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info(Info, State) ->
-    ?ERROR("[Broker] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Broker] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #{pool := Pool, id := Id}) ->
@@ -444,4 +470,3 @@ code_change(_OldVsn, State, _Extra) ->
 %%------------------------------------------------------------------------------
 %% Internal functions
 %%------------------------------------------------------------------------------
-

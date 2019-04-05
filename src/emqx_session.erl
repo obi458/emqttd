@@ -46,21 +46,40 @@
 -include("types.hrl").
 
 -export([start_link/1]).
--export([info/1, attrs/1]).
--export([stats/1]).
--export([resume/2, discard/2]).
--export([update_expiry_interval/2]).
--export([subscribe/2, subscribe/4]).
--export([publish/3]).
--export([puback/2, puback/3]).
--export([pubrec/2, pubrec/3]).
--export([pubrel/3, pubcomp/3]).
--export([unsubscribe/2, unsubscribe/4]).
+
+-export([ info/1
+        , attrs/1
+        , stats/1
+        ]).
+
+-export([ resume/2
+        , discard/2
+        , update_expiry_interval/2
+        ]).
+
+-export([ subscribe/2
+        , subscribe/4
+        , unsubscribe/2
+        , unsubscribe/4
+        , publish/3
+        , puback/2
+        , puback/3
+        , pubrec/2
+        , pubrec/3
+        , pubrel/3
+        , pubcomp/3
+        ]).
+
 -export([close/1]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 -import(emqx_zone, [get_env/2, get_env/3]).
 
@@ -369,7 +388,7 @@ init([Parent, #{zone            := Zone,
     ok = emqx_sm:register_session(ClientId, self()),
     true = emqx_sm:set_session_attrs(ClientId, attrs(State)),
     true = emqx_sm:set_session_stats(ClientId, stats(State)),
-    emqx_hooks:run('session.created', [#{client_id => ClientId}, info(State)]),
+    ok = emqx_hooks:run('session.created', [#{client_id => ClientId}, info(State)]),
     ok = emqx_misc:init_proc_mng_policy(Zone),
     ok = proc_lib:init_ack(Parent, {ok, self()}),
     gen_server:enter_loop(?MODULE, [{hibernate_after, IdleTimout}], State).
@@ -390,7 +409,7 @@ deliver_fun(ConnPid) when node(ConnPid) == node() ->
 deliver_fun(ConnPid) ->
     Node = node(ConnPid),
     fun(Packet) ->
-            emqx_rpc:cast(Node, erlang, send, [ConnPid, {deliver, Packet}])
+        true = emqx_rpc:cast(Node, erlang, send, [ConnPid, {deliver, Packet}]), ok
     end.
 
 handle_call(info, _From, State) ->
@@ -403,11 +422,11 @@ handle_call(stats, _From, State) ->
     reply(stats(State), State);
 
 handle_call({discard, ByPid}, _From, State = #state{conn_pid = undefined}) ->
-    ?LOG(warning, "Discarded by ~p", [ByPid]),
+    ?LOG(warning, "[Session] Discarded by ~p", [ByPid]),
     {stop, {shutdown, discarded}, ok, State};
 
 handle_call({discard, ByPid}, _From, State = #state{client_id = ClientId, conn_pid = ConnPid}) ->
-    ?LOG(warning, "Conn ~p is discarded by ~p", [ConnPid, ByPid]),
+    ?LOG(warning, "[Session] Conn ~p is discarded by ~p", [ConnPid, ByPid]),
     ConnPid ! {shutdown, discard, {ClientId, ByPid}},
     {stop, {shutdown, discarded}, ok, State};
 
@@ -426,7 +445,7 @@ handle_call({register_publish_packet_id, PacketId, Ts}, _From,
                       {ok, ensure_stats_timer(ensure_await_rel_timer(State1))}
               end;
           true ->
-              ?LOG(warning, "Dropped qos2 packet ~w for too many awaiting_rel", [PacketId]),
+              ?LOG(warning, "[Session] Dropped qos2 packet ~w for too many awaiting_rel", [PacketId]),
               emqx_metrics:trans(inc, 'messages/qos2/dropped'),
               {{error, ?RC_RECEIVE_MAXIMUM_EXCEEDED}, State}
       end);
@@ -438,7 +457,7 @@ handle_call({pubrec, PacketId, _ReasonCode}, _From, State = #state{inflight = In
           true ->
               {ok, ensure_stats_timer(acked(pubrec, PacketId, State))};
           false ->
-              ?LOG(warning, "The PUBREC PacketId ~w is not found.", [PacketId]),
+              ?LOG(warning, "[Session] The PUBREC PacketId ~w is not found.", [PacketId]),
               emqx_metrics:trans(inc, 'packets/pubrec/missed'),
               {{error, ?RC_PACKET_IDENTIFIER_NOT_FOUND}, State}
       end);
@@ -450,7 +469,7 @@ handle_call({pubrel, PacketId, _ReasonCode}, _From, State = #state{awaiting_rel 
           {_Ts, AwaitingRel1} ->
               {ok, ensure_stats_timer(State#state{awaiting_rel = AwaitingRel1})};
           error ->
-              ?LOG(warning, "The PUBREL PacketId ~w is not found", [PacketId]),
+              ?LOG(warning, "[Session] The PUBREL PacketId ~w is not found", [PacketId]),
               emqx_metrics:trans(inc, 'packets/pubrel/missed'),
               {{error, ?RC_PACKET_IDENTIFIER_NOT_FOUND}, State}
       end);
@@ -459,29 +478,20 @@ handle_call(close, _From, State) ->
     {stop, normal, ok, State};
 
 handle_call(Req, _From, State) ->
-    emqx_logger:error("[Session] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Session] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 %% SUBSCRIBE:
 handle_cast({subscribe, FromPid, {PacketId, _Properties, TopicFilters}},
             State = #state{client_id = ClientId, username = Username, subscriptions = Subscriptions}) ->
     {ReasonCodes, Subscriptions1} =
-        lists:foldr(fun({Topic, SubOpts = #{qos := QoS}}, {RcAcc, SubMap}) ->
-                            {[QoS|RcAcc], case maps:find(Topic, SubMap) of
-                                              {ok, SubOpts} ->
-                                                  emqx_hooks:run('session.subscribed', [#{client_id => ClientId, username => Username}, Topic, SubOpts#{first => false}]),
-                                                  SubMap;
-                                              {ok, _SubOpts} ->
-                                                  emqx_broker:set_subopts(Topic, SubOpts),
-                                                  %% Why???
-                                                  emqx_hooks:run('session.subscribed', [#{client_id => ClientId, username => Username}, Topic, SubOpts#{first => false}]),
-                                                  maps:put(Topic, SubOpts, SubMap);
-                                              error ->
-                                                  emqx_broker:subscribe(Topic, ClientId, SubOpts),
-                                                  emqx_hooks:run('session.subscribed', [#{client_id => ClientId, username => Username}, Topic, SubOpts#{first => true}]),
-                                                  maps:put(Topic, SubOpts, SubMap)
-                                          end}
-                    end, {[], Subscriptions}, TopicFilters),
+        lists:foldr(
+            fun ({Topic, SubOpts = #{qos := QoS, rc := RC}}, {RcAcc, SubMap}) when
+                      RC == ?QOS_0; RC == ?QOS_1; RC == ?QOS_2 ->
+                    {[QoS|RcAcc], do_subscribe(ClientId, Username, Topic, SubOpts, SubMap)};
+                ({_Topic, #{rc := RC}}, {RcAcc, SubMap}) ->
+                    {[RC|RcAcc], SubMap}
+            end, {[], Subscriptions}, TopicFilters),
     suback(FromPid, PacketId, ReasonCodes),
     noreply(ensure_stats_timer(State#state{subscriptions = Subscriptions1}));
 
@@ -493,7 +503,7 @@ handle_cast({unsubscribe, From, {PacketId, _Properties, TopicFilters}},
                             case maps:find(Topic, SubMap) of
                                 {ok, SubOpts} ->
                                     ok = emqx_broker:unsubscribe(Topic),
-                                    emqx_hooks:run('session.unsubscribed', [#{client_id => ClientId, username => Username}, Topic, SubOpts]),
+                                    ok = emqx_hooks:run('session.unsubscribed', [#{client_id => ClientId, username => Username}, Topic, SubOpts]),
                                     {[?RC_SUCCESS|Acc], maps:remove(Topic, SubMap)};
                                 error ->
                                     {[?RC_NO_SUBSCRIPTION_EXISTED|Acc], SubMap}
@@ -509,7 +519,7 @@ handle_cast({puback, PacketId, _ReasonCode}, State = #state{inflight = Inflight}
           true ->
               ensure_stats_timer(dequeue(acked(puback, PacketId, State)));
           false ->
-              ?LOG(warning, "The PUBACK PacketId ~w is not found", [PacketId]),
+              ?LOG(warning, "[Session] The PUBACK PacketId ~w is not found", [PacketId]),
               emqx_metrics:trans(inc, 'packets/puback/missed'),
               State
       end);
@@ -521,7 +531,7 @@ handle_cast({pubcomp, PacketId, _ReasonCode}, State = #state{inflight = Inflight
           true ->
               ensure_stats_timer(dequeue(acked(pubcomp, PacketId, State)));
           false ->
-              ?LOG(warning, "The PUBCOMP PacketId ~w is not found", [PacketId]),
+              ?LOG(warning, "[Session] The PUBCOMP PacketId ~w is not found", [PacketId]),
               emqx_metrics:trans(inc, 'packets/pubcomp/missed'),
               State
       end);
@@ -539,14 +549,14 @@ handle_cast({resume, #{conn_pid        := ConnPid,
                            expiry_timer     = ExpireTimer,
                            will_delay_timer = WillDelayTimer}) ->
 
-    ?LOG(info, "Resumed by connection ~p ", [ConnPid]),
+    ?LOG(info, "[Session] Resumed by connection ~p ", [ConnPid]),
 
     %% Cancel Timers
     lists:foreach(fun emqx_misc:cancel_timer/1,
                   [RetryTimer, AwaitTimer, ExpireTimer, WillDelayTimer]),
 
     case kick(ClientId, OldConnPid, ConnPid) of
-        ok -> ?LOG(warning, "Connection ~p kickout ~p", [ConnPid, OldConnPid]);
+        ok -> ?LOG(warning, "[Session] Connection ~p kickout ~p", [ConnPid, OldConnPid]);
         ignore -> ok
     end,
 
@@ -568,7 +578,7 @@ handle_cast({resume, #{conn_pid        := ConnPid,
     %% Clean Session: true -> false???
     CleanStart andalso emqx_sm:set_session_attrs(ClientId, attrs(State1)),
 
-    emqx_hooks:run('session.resumed', [#{client_id => ClientId}, attrs(State)]),
+    ok = emqx_hooks:run('session.resumed', [#{client_id => ClientId}, attrs(State)]),
 
     %% Replay delivery and Dequeue pending messages
     noreply(ensure_stats_timer(dequeue(retry_delivery(true, State1))));
@@ -577,7 +587,7 @@ handle_cast({update_expiry_interval, Interval}, State) ->
     {noreply, State#state{expiry_interval = Interval}};
 
 handle_cast(Msg, State) ->
-    emqx_logger:error("[Session] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Session] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({dispatch, Topic, Msg}, State) when is_record(Msg, message) ->
@@ -613,12 +623,12 @@ handle_info({timeout, Timer, emit_stats},
             GcState1 = emqx_gc:reset(GcState),
             {noreply, NewState#state{gc_state = GcState1}, hibernate};
         {shutdown, Reason} ->
-            ?LOG(warning, "shutdown due to ~p", [Reason]),
+            ?LOG(warning, "[Session] Shutdown exceptionally due to ~p", [Reason]),
             shutdown(Reason, NewState)
     end;
 
 handle_info({timeout, Timer, expired}, State = #state{expiry_timer = Timer}) ->
-    ?LOG(info, "expired, shutdown now.", []),
+    ?LOG(info, "[Session] Expired, shutdown now.", []),
     shutdown(expired, State);
 
 handle_info({timeout, Timer, will_delay}, State = #state{will_msg = WillMsg, will_delay_timer = Timer}) ->
@@ -653,12 +663,12 @@ handle_info({'EXIT', OldPid, _Reason}, State = #state{old_conn_pid = OldPid}) ->
     {noreply, State#state{old_conn_pid = undefined}};
 
 handle_info({'EXIT', Pid, Reason}, State = #state{conn_pid = ConnPid}) ->
-    ?LOG(error, "Unexpected EXIT: conn_pid=~p, exit_pid=~p, reason=~p",
+    ?LOG(error, "[Session] Unexpected EXIT: conn_pid=~p, exit_pid=~p, reason=~p",
          [ConnPid, Pid, Reason]),
     {noreply, State};
 
 handle_info(Info, State) ->
-    emqx_logger:error("[Session] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Session] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(Reason, #state{will_msg = WillMsg,
@@ -668,7 +678,7 @@ terminate(Reason, #state{will_msg = WillMsg,
                          old_conn_pid = OldConnPid}) ->
     send_willmsg(WillMsg),
     [maybe_shutdown(Pid, Reason) || Pid <- [ConnPid, OldConnPid]],
-    emqx_hooks:run('session.terminated', [#{client_id => ClientId, username => Username}, Reason]).
+    ok = emqx_hooks:run('session.terminated', [#{client_id => ClientId, username => Username}, Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -782,7 +792,7 @@ expire_awaiting_rel([{PacketId, Ts} | More], Now,
     case (timer:now_diff(Now, Ts) div 1000) of
         Age when Age >= Timeout ->
             emqx_metrics:trans(inc, 'messages/qos2/expired'),
-            ?LOG(warning, "Dropped qos2 packet ~s for await_rel_timeout", [PacketId]),
+            ?LOG(warning, "[Session] Dropped qos2 packet ~s for await_rel_timeout", [PacketId]),
             expire_awaiting_rel(More, Now, State#state{awaiting_rel = maps:remove(PacketId, AwaitingRel)});
         Age ->
             ensure_await_rel_timer(Timeout - max(0, Age), State)
@@ -802,7 +812,11 @@ is_awaiting_full(#state{awaiting_rel = AwaitingRel,
 %% Dispatch messages
 %%------------------------------------------------------------------------------
 
-handle_dispatch(Msgs, State = #state{inflight = Inflight, subscriptions = SubMap}) ->
+handle_dispatch(Msgs, State = #state{inflight = Inflight,
+                                     client_id = ClientId,
+                                     username = Username,
+                                     subscriptions = SubMap}) ->
+    SessProps = #{client_id => ClientId, username => Username},
     %% Drain the mailbox and batch deliver
     Msgs1 = drain_m(batch_n(Inflight), Msgs),
     %% Ack the messages for shared subscription
@@ -813,7 +827,9 @@ handle_dispatch(Msgs, State = #state{inflight = Inflight, subscriptions = SubMap
                       SubOpts = find_subopts(Topic, SubMap),
                       case process_subopts(SubOpts, Msg, State) of
                           {ok, Msg1} -> [Msg1|Acc];
-                          ignore -> Acc
+                          ignore ->
+                              emqx_hooks:run('message.dropped', [SessProps, Msg]),
+                              Acc
                       end
               end, [], Msgs2),
     NState = batch_process(Msgs3, State),
@@ -829,8 +845,14 @@ drain_m(Cnt, Msgs) when Cnt =< 0 ->
     lists:reverse(Msgs);
 drain_m(Cnt, Msgs) ->
     receive
-        {dispatch, Topic, Msg} ->
-            drain_m(Cnt-1, [{Topic, Msg}|Msgs])
+        {dispatch, Topic, Msg} when is_record(Msg, message)->
+            drain_m(Cnt-1, [{Topic, Msg} | Msgs]);
+        {dispatch, Topic, InMsgs} when is_list(InMsgs) ->
+            Msgs1 = lists:foldl(
+                      fun(Msg, Acc) ->
+                              [{Topic, Msg} | Acc]
+                      end, Msgs, InMsgs),
+            drain_m(Cnt-length(InMsgs), Msgs1)
     after 0 ->
         lists:reverse(Msgs)
     end.
@@ -941,7 +963,7 @@ enqueue_msg(Msg, State = #state{mqueue = Q, client_id = ClientId, username = Use
     if
         Dropped =/= undefined ->
             SessProps = #{client_id => ClientId, username => Username},
-            emqx_hooks:run('message.dropped', [SessProps, Msg]);
+            ok = emqx_hooks:run('message.dropped', [SessProps, Dropped]);
         true -> ok
     end,
     State#state{mqueue = NewQ}.
@@ -950,11 +972,8 @@ enqueue_msg(Msg, State = #state{mqueue = Q, client_id = ClientId, username = Use
 %% Deliver
 %%------------------------------------------------------------------------------
 
-redeliver({PacketId, Msg = #message{qos = QoS}}, State) ->
-    Msg1 = if
-               QoS =:= ?QOS_2 -> Msg;
-               true -> emqx_message:set_flag(dup, Msg)
-           end,
+redeliver({PacketId, Msg = #message{qos = QoS}}, State) when QoS =/= ?QOS_0 ->
+    Msg1 = emqx_message:set_flag(dup, Msg),
     do_deliver(PacketId, Msg1, State);
 
 redeliver({pubrel, PacketId}, #state{deliver_fun = DeliverFun}) ->
@@ -980,23 +999,23 @@ await(PacketId, Msg, State = #state{inflight = Inflight}) ->
 acked(puback, PacketId, State = #state{client_id = ClientId, username = Username, inflight  = Inflight}) ->
     case emqx_inflight:lookup(PacketId, Inflight) of
         {value, {publish, {_, Msg}, _Ts}} ->
-            emqx_hooks:run('message.acked', [#{client_id => ClientId, username => Username}], Msg),
+            ok = emqx_hooks:run('message.acked', [#{client_id => ClientId, username => Username}, Msg]),
             State#state{inflight = emqx_inflight:delete(PacketId, Inflight)};
         none ->
-            ?LOG(warning, "Duplicated PUBACK PacketId ~w", [PacketId]),
+            ?LOG(warning, "[Session] Duplicated PUBACK PacketId ~w", [PacketId]),
             State
     end;
 
 acked(pubrec, PacketId, State = #state{client_id = ClientId, username = Username, inflight = Inflight}) ->
     case emqx_inflight:lookup(PacketId, Inflight) of
         {value, {publish, {_, Msg}, _Ts}} ->
-            emqx_hooks:run('message.acked', [#{client_id => ClientId, username => Username}], Msg),
+            ok = emqx_hooks:run('message.acked', [#{client_id => ClientId, username => Username}, Msg]),
             State#state{inflight = emqx_inflight:update(PacketId, {pubrel, PacketId, os:timestamp()}, Inflight)};
         {value, {pubrel, PacketId, _Ts}} ->
-            ?LOG(warning, "Duplicated PUBREC PacketId ~w", [PacketId]),
+            ?LOG(warning, "[Session] Duplicated PUBREC PacketId ~w", [PacketId]),
             State;
         none ->
-            ?LOG(warning, "Unexpected PUBREC PacketId ~w", [PacketId]),
+            ?LOG(warning, "[Session] Unexpected PUBREC PacketId ~w", [PacketId]),
             State
     end;
 
@@ -1118,3 +1137,18 @@ noreply(State) ->
 shutdown(Reason, State) ->
     {stop, {shutdown, Reason}, State}.
 
+do_subscribe(ClientId, Username, Topic, SubOpts, SubMap) ->
+    case maps:find(Topic, SubMap) of
+        {ok, SubOpts} ->
+            ok = emqx_hooks:run('session.subscribed', [#{client_id => ClientId, username => Username}, Topic, SubOpts#{first => false}]),
+            SubMap;
+        {ok, _SubOpts} ->
+            emqx_broker:set_subopts(Topic, SubOpts),
+            %% Why???
+            ok = emqx_hooks:run('session.subscribed', [#{client_id => ClientId, username => Username}, Topic, SubOpts#{first => false}]),
+            maps:put(Topic, SubOpts, SubMap);
+        error ->
+            emqx_broker:subscribe(Topic, ClientId, SubOpts),
+            ok = emqx_hooks:run('session.subscribed', [#{client_id => ClientId, username => Username}, Topic, SubOpts#{first => true}]),
+            maps:put(Topic, SubOpts, SubMap)
+    end.

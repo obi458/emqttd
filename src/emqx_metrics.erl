@@ -14,20 +14,46 @@
 
 -module(emqx_metrics).
 
+-behavior(gen_server).
+
 -include("logger.hrl").
 -include("types.hrl").
 -include("emqx_mqtt.hrl").
 
 -export([start_link/0]).
--export([new/1, all/0]).
--export([val/1, inc/1, inc/2, inc/3, dec/2, dec/3, set/2]).
--export([trans/2, trans/3, trans/4, commit/0]).
+
+-export([ new/1
+        , all/0
+        ]).
+
+-export([ val/1
+        , inc/1
+        , inc/2
+        , inc/3
+        , dec/2
+        , dec/3
+        , set/2
+        ]).
+
+-export([ trans/2
+        , trans/3
+        , trans/4
+        , commit/0
+        ]).
+
 %% Received/sent metrics
--export([received/1, sent/1]).
+-export([ received/1
+        , sent/1
+        ]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 %% Bytes sent and received of Broker
 -define(BYTES_METRICS, [
@@ -292,15 +318,15 @@ init([]) ->
     {ok, #{}, hibernate}.
 
 handle_call(Req, _From, State) ->
-    ?ERROR("[Metrics] unexpected call: ~p", [Req]),
+    ?LOG(error, "[Metrics] Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?ERROR("[Metrics] unexpected cast: ~p", [Msg]),
+    ?LOG(error, "[Metrics] Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info(Info, State) ->
-    ?ERROR("[Metrics] unexpected info: ~p", [Info]),
+    ?LOG(error, "[Metrics] Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #{}) ->
