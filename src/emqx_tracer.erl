@@ -65,9 +65,10 @@ start_link() ->
 trace(publish, #message{topic = <<"$SYS/", _/binary>>}) ->
     %% Dont' trace '$SYS' publish
     ignore;
-trace(publish, #message{from = From, topic = Topic, payload = Payload})
-        when is_binary(From); is_atom(From) ->
-    emqx_logger:info(#{topic => Topic}, "PUBLISH to ~s: ~p", [Topic, Payload]).
+trace(publish, #message{from = From, topic = Topic, payload = Payload}) -> %cw
+    %    when is_binary(From); is_atom(From) ->
+    %emqx_logger:info(#{topic => Topic}, "PUBLISH to ~s: ~p", [Topic, Payload]).
+    emqx_logger:info(#{topic => Topic}, "PUBLISH to ~s", [Topic]).
 
 %%------------------------------------------------------------------------------
 %% Start/Stop trace

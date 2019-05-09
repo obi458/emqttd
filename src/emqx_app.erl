@@ -39,7 +39,7 @@ start(_Type, _Args) ->
     emqx_modules:load(),
     emqx_plugins:init(),
     emqx_plugins:load(),
-    emqx_listeners:start(),
+    %emqx_listeners:start(), cw
     start_autocluster(),
     register(emqx, self()),
 
