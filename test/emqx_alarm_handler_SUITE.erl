@@ -24,8 +24,7 @@
 -include("emqx_mqtt.hrl").
 -include("emqx.hrl").
 
-all() -> [t_alarm_handler,
-          t_logger_handler].
+all() -> [t_alarm_handler].
 
 init_per_suite(Config) ->
     emqx_ct_helpers:start_apps([], fun set_special_configs/1),
@@ -60,10 +59,10 @@ t_alarm_handler(_) ->
                                       #{version => ?MQTT_PROTO_V5}
                                   )),
             {ok, Data} = gen_tcp:recv(Sock, 0),
-            {ok, ?CONNACK_PACKET(?RC_SUCCESS), _} = raw_recv_parse(Data, ?MQTT_PROTO_V5),
+            {ok, ?CONNACK_PACKET(?RC_SUCCESS), <<>>, _} = raw_recv_parse(Data, ?MQTT_PROTO_V5),
 
-            Topic1 = emqx_topic:systop(<<"alarms/alarm_for_test/alert">>),
-            Topic2 = emqx_topic:systop(<<"alarms/alarm_for_test/clear">>),
+            Topic1 = emqx_topic:systop(<<"alarms/alert">>),
+            Topic2 = emqx_topic:systop(<<"alarms/clear">>),
             SubOpts = #{rh => 1, qos => ?QOS_2, rap => 0, nl => 0, rc => 0},
             emqx_client_sock:send(Sock,
                                   raw_send_serialize(
@@ -74,7 +73,7 @@ t_alarm_handler(_) ->
                                       #{version => ?MQTT_PROTO_V5})),
 
             {ok, Data2} = gen_tcp:recv(Sock, 0),
-            {ok, ?SUBACK_PACKET(1, #{}, [2, 2]), _} = raw_recv_parse(Data2, ?MQTT_PROTO_V5),
+            {ok, ?SUBACK_PACKET(1, #{}, [2, 2]), <<>>, _} = raw_recv_parse(Data2, ?MQTT_PROTO_V5),
 
             alarm_handler:set_alarm({alarm_for_test, #alarm{id = alarm_for_test,
                                                             severity = error,
@@ -83,7 +82,7 @@ t_alarm_handler(_) ->
 
             {ok, Data3} = gen_tcp:recv(Sock, 0),
 
-            {ok, ?PUBLISH_PACKET(?QOS_0, Topic1, _, _), _} = raw_recv_parse(Data3, ?MQTT_PROTO_V5),
+            {ok, ?PUBLISH_PACKET(?QOS_0, Topic1, _, _), <<>>, _} = raw_recv_parse(Data3, ?MQTT_PROTO_V5),
 
             ?assertEqual(true, lists:keymember(alarm_for_test, 1, emqx_alarm_handler:get_alarms())),
 
@@ -91,27 +90,11 @@ t_alarm_handler(_) ->
 
             {ok, Data4} = gen_tcp:recv(Sock, 0),
 
-            {ok, ?PUBLISH_PACKET(?QOS_0, Topic2, _, _), _} = raw_recv_parse(Data4, ?MQTT_PROTO_V5),
+            {ok, ?PUBLISH_PACKET(?QOS_0, Topic2, _, _), <<>>, _} = raw_recv_parse(Data4, ?MQTT_PROTO_V5),
 
             ?assertEqual(false, lists:keymember(alarm_for_test, 1, emqx_alarm_handler:get_alarms()))
 
         end).
-
-t_logger_handler(_) ->
-    %% Meck supervisor report
-    logger:log(error, #{label => {supervisor, start_error},
-                        report => [{supervisor, {local, tmp_sup}},
-                                   {errorContext, shutdown},
-                                   {reason, reached_max_restart_intensity},
-                                   {offender, [{pid, meck},
-                                               {id, meck},
-                                               {mfargs, {meck, start_link, []}},
-                                               {restart_type, permanent},
-                                               {shutdown, 5000},
-                                               {child_type, worker}]}]},
-               #{logger_formatter => #{title => "SUPERVISOR REPORT"},
-                 report_cb => fun logger:format_otp_report/1}),
-    ?assertEqual(true, lists:keymember(supervisor_report, 1, emqx_alarm_handler:get_alarms())).
 
 raw_send_serialize(Packet) ->
     emqx_frame:serialize(Packet).
@@ -119,6 +102,7 @@ raw_send_serialize(Packet) ->
 raw_send_serialize(Packet, Opts) ->
     emqx_frame:serialize(Packet, Opts).
 
-raw_recv_parse(P, ProtoVersion) ->
-    emqx_frame:parse(P, {none, #{max_packet_size => ?MAX_PACKET_SIZE,
-                                 version         => ProtoVersion}}).
+raw_recv_parse(Bin, ProtoVer) ->
+    emqx_frame:parse(Bin, {none, #{max_size => ?MAX_PACKET_SIZE,
+                                   version  => ProtoVer}}).
+

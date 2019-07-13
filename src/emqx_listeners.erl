@@ -73,7 +73,7 @@ start_listener(Proto, ListenOn, Options) when Proto == https; Proto == wss ->
 start_mqtt_listener(Name, ListenOn, Options) ->
     SockOpts = esockd:parse_opt(Options),
     esockd:open(Name, ListenOn, merge_default(SockOpts),
-                {emqx_connection, start_link, [Options -- SockOpts]}).
+                {emqx_channel, start_link, [Options -- SockOpts]}).
 
 start_http_listener(Start, Name, ListenOn, RanchOpts, ProtoOpts) ->
     Start(Name, with_port(ListenOn, RanchOpts), ProtoOpts).
@@ -82,23 +82,25 @@ mqtt_path(Options) ->
     proplists:get_value(mqtt_path, Options, "/mqtt").
 
 ws_opts(Options) ->
-    Dispatch = cowboy_router:compile([{'_', [{mqtt_path(Options), emqx_ws_connection, Options}]}]),
+    Dispatch = cowboy_router:compile([{'_', [{mqtt_path(Options), emqx_ws_channel, Options}]}]),
     #{env => #{dispatch => Dispatch}, proxy_header => proplists:get_value(proxy_protocol, Options, false)}.
 
 ranch_opts(Options) ->
     NumAcceptors = proplists:get_value(acceptors, Options, 4),
     MaxConnections = proplists:get_value(max_connections, Options, 1024),
     TcpOptions = proplists:get_value(tcp_options, Options, []),
-    RanchOpts = [{num_acceptors, NumAcceptors}, {max_connections, MaxConnections} | TcpOptions],
+    RanchOpts = #{num_acceptors => NumAcceptors,
+                  max_connections => MaxConnections,
+                  socket_opts => TcpOptions},
     case proplists:get_value(ssl_options, Options) of
         undefined  -> RanchOpts;
-        SslOptions -> RanchOpts ++ SslOptions
+        SslOptions -> RanchOpts#{socket_opts => TcpOptions ++ SslOptions}
     end.
 
-with_port(Port, Opts) when is_integer(Port) ->
-    [{port, Port}|Opts];
-with_port({Addr, Port}, Opts) ->
-    [{ip, Addr}, {port, Port}|Opts].
+with_port(Port, Opts = #{socket_opts := SocketOption}) when is_integer(Port) ->
+    Opts#{socket_opts => [{port, Port}| SocketOption]};
+with_port({Addr, Port}, Opts = #{socket_opts := SocketOption}) ->
+    Opts#{socket_opts => [{ip, Addr}, {port, Port}| SocketOption]}.
 
 %% @doc Restart all listeners
 -spec(restart() -> ok).

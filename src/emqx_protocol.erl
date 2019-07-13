@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_protocol).
 
@@ -18,16 +20,20 @@
 -include("emqx_mqtt.hrl").
 -include("logger.hrl").
 
--export([ init/2
-        , info/1
+-logger_header("[Protocol]").
+
+-export([ info/1
         , attrs/1
         , attr/2
         , caps/1
+        , caps/2
         , stats/1
         , client_id/1
         , credentials/1
-        , parser/1
         , session/1
+        ]).
+
+-export([ init/2
         , received/2
         , process/2
         , deliver/2
@@ -35,11 +41,10 @@
         , terminate/2
         ]).
 
--export_type([state/0]).
-
 -record(pstate, {
           zone,
           sendfun,
+          sockname,
           peername,
           peercert,
           proto_ver,
@@ -53,20 +58,14 @@
           session,
           clean_start,
           topic_aliases,
-          packet_size,
           will_topic,
           will_msg,
           keepalive,
           is_bridge,
-          enable_ban,
-          enable_acl,
-          enable_flapping_detect,
-          acl_deny_action,
           recv_stats,
           send_stats,
           connected,
           connected_at,
-          ignore_loop,
           topic_alias_maximum,
           conn_mod,
           credentials,
@@ -74,6 +73,8 @@
         }).
 
 -opaque(state() :: #pstate{}).
+
+-export_type([state/0]).
 
 -ifdef(TEST).
 -compile(export_all).
@@ -87,12 +88,14 @@
 %%------------------------------------------------------------------------------
 
 -spec(init(map(), list()) -> state()).
-init(SocketOpts = #{ peername := Peername
+init(SocketOpts = #{ sockname := Sockname
+                   , peername := Peername
                    , peercert := Peercert
                    , sendfun := SendFun}, Options)  ->
     Zone = proplists:get_value(zone, Options),
     #pstate{zone                   = Zone,
             sendfun                = SendFun,
+            sockname               = Sockname,
             peername               = Peername,
             peercert               = Peercert,
             proto_ver              = ?MQTT_PROTO_V4,
@@ -103,16 +106,10 @@ init(SocketOpts = #{ peername := Peername
             username               = init_username(Peercert, Options),
             clean_start            = false,
             topic_aliases          = #{},
-            packet_size            = emqx_zone:get_env(Zone, max_packet_size),
             is_bridge              = false,
-            enable_ban             = emqx_zone:get_env(Zone, enable_ban, false),
-            enable_acl             = emqx_zone:get_env(Zone, enable_acl),
-            enable_flapping_detect = emqx_zone:get_env(Zone, enable_flapping_detect, false),
-            acl_deny_action        = emqx_zone:get_env(Zone, acl_deny_action, ignore),
             recv_stats             = #{msg => 0, pkt => 0},
             send_stats             = #{msg => 0, pkt => 0},
             connected              = false,
-            ignore_loop            = emqx_config:get_env(mqtt_ignore_loop_deliver, false),
             topic_alias_maximum    = #{to_client => 0, from_client => 0},
             conn_mod               = maps:get(conn_mod, SocketOpts, undefined),
             credentials            = #{},
@@ -135,18 +132,18 @@ set_username(_Username, PState) ->
 %% API
 %%------------------------------------------------------------------------------
 
-info(PState = #pstate{conn_props    = ConnProps,
+info(PState = #pstate{zone          = Zone,
+                      conn_props    = ConnProps,
                       ack_props     = AckProps,
                       session       = Session,
                       topic_aliases = Aliases,
-                      will_msg      = WillMsg,
-                      enable_acl    = EnableAcl}) ->
+                      will_msg      = WillMsg}) ->
     maps:merge(attrs(PState), #{conn_props => ConnProps,
                                 ack_props => AckProps,
                                 session => Session,
                                 topic_aliases => Aliases,
                                 will_msg => WillMsg,
-                                enable_acl => EnableAcl
+                                enable_acl => emqx_zone:get_env(Zone, enable_acl, false)
                                }).
 
 attrs(#pstate{zone         = Zone,
@@ -177,6 +174,8 @@ attrs(#pstate{zone         = Zone,
      , credentials => Credentials
      }.
 
+attr(proto_ver, #pstate{proto_ver = ProtoVer}) ->
+    ProtoVer;
 attr(max_inflight, #pstate{proto_ver = ?MQTT_PROTO_V5, conn_props = ConnProps}) ->
     get_property('Receive-Maximum', ConnProps, 65535);
 attr(max_inflight, #pstate{zone = Zone}) ->
@@ -199,6 +198,9 @@ attr(Name, PState) ->
         false -> undefined
     end.
 
+caps(Name, PState) ->
+    maps:get(Name, caps(PState)).
+
 caps(#pstate{zone = Zone}) ->
     emqx_mqtt_caps:get_caps(Zone).
 
@@ -208,12 +210,14 @@ client_id(#pstate{client_id = ClientId}) ->
 credentials(#pstate{zone      = Zone,
                     client_id = ClientId,
                     username  = Username,
+                    sockname  = Sockname,
                     peername  = Peername,
                     peercert  = Peercert,
                     ws_cookie = WsCookie,
                     connected_at = ConnectedAt}) ->
     with_cert(#{zone => Zone,
                 client_id => ClientId,
+                sockname => Sockname,
                 username => Username,
                 peername => Peername,
                 ws_cookie => WsCookie,
@@ -240,9 +244,6 @@ stats(#pstate{recv_stats = #{pkt := RecvPkt, msg := RecvMsg},
 
 session(#pstate{session = SPid}) ->
     SPid.
-
-parser(#pstate{packet_size = Size, proto_ver = Ver}) ->
-    emqx_frame:initial_state(#{max_packet_size => Size, version => Ver}).
 
 %%------------------------------------------------------------------------------
 %% Packet Received
@@ -378,21 +379,22 @@ process(?CONNECT_PACKET(
                                 username    = Username,
                                 password    = Password} = ConnPkt), PState) ->
 
-    NewClientId = maybe_use_username_as_clientid(ClientId, Username, PState),
+    %% TODO: Mountpoint...
+    %% Msg -> emqx_mountpoint:mount(MountPoint, Msg)
+    PState0 = maybe_use_username_as_clientid(ClientId,
+                set_username(Username,
+                             PState#pstate{proto_ver    = ProtoVer,
+                                           proto_name   = ProtoName,
+                                           clean_start  = CleanStart,
+                                           keepalive    = Keepalive,
+                                           conn_props   = ConnProps,
+                                           is_bridge    = IsBridge,
+                                           connected_at = os:timestamp()})),
+
+    NewClientId = PState0#pstate.client_id,
 
     emqx_logger:set_metadata_client_id(NewClientId),
 
-    %% TODO: Mountpoint...
-    %% Msg -> emqx_mountpoint:mount(MountPoint, Msg)
-    PState0 = set_username(Username,
-                           PState#pstate{client_id    = NewClientId,
-                                         proto_ver    = ProtoVer,
-                                         proto_name   = ProtoName,
-                                         clean_start  = CleanStart,
-                                         keepalive    = Keepalive,
-                                         conn_props   = ConnProps,
-                                         is_bridge    = IsBridge,
-                                         connected_at = os:timestamp()}),
     Credentials = credentials(PState0),
     PState1 = PState0#pstate{credentials = Credentials},
     connack(
@@ -415,51 +417,53 @@ process(?CONNECT_PACKET(
                               %% Success
                               {?RC_SUCCESS, SP, PState4};
                           {error, Error} ->
-                              ?LOG(error, "[Protocol] Failed to open session: ~p", [Error]),
+                              ?LOG(error, "Failed to open session: ~p", [Error]),
                               {?RC_UNSPECIFIED_ERROR, PState1#pstate{credentials = Credentials0}}
                       end;
                   {error, Reason} ->
-                      ?LOG(warning, "[Protocol] Client ~s (Username: '~s') login failed for ~p", [NewClientId, Username, Reason]),
+                      ?LOG(warning, "Client ~s (Username: '~s') login failed for ~p", [NewClientId, Username, Reason]),
                       {emqx_reason_codes:connack_error(Reason), PState1#pstate{credentials = Credentials}}
               end;
           {error, ReasonCode} ->
               {ReasonCode, PState1}
       end);
 
-process(Packet = ?PUBLISH_PACKET(?QOS_0, Topic, _PacketId, _Payload), PState) ->
+process(Packet = ?PUBLISH_PACKET(?QOS_0, Topic, _PacketId, _Payload), PState = #pstate{zone = Zone}) ->
     case check_publish(Packet, PState) of
         ok ->
             do_publish(Packet, PState);
         {error, ReasonCode} ->
-            ?LOG(warning, "[Protocol] Cannot publish qos0 message to ~s for ~s",
+            ?LOG(warning, "Cannot publish qos0 message to ~s for ~s",
                  [Topic, emqx_reason_codes:text(ReasonCode)]),
-            do_acl_deny_action(Packet, ReasonCode, PState)
+            AclDenyAction = emqx_zone:get_env(Zone, acl_deny_action, ignore),
+            do_acl_deny_action(AclDenyAction, Packet, ReasonCode, PState)
     end;
 
-process(Packet = ?PUBLISH_PACKET(?QOS_1, Topic, PacketId, _Payload), PState) ->
+process(Packet = ?PUBLISH_PACKET(?QOS_1, Topic, PacketId, _Payload), PState = #pstate{zone = Zone}) ->
     case check_publish(Packet, PState) of
         ok ->
             do_publish(Packet, PState);
         {error, ReasonCode} ->
-            ?LOG(warning, "[Protocol] Cannot publish qos1 message to ~s for ~s",
-                [Topic, emqx_reason_codes:text(ReasonCode)]),
+            ?LOG(warning, "Cannot publish qos1 message to ~s for ~s", [Topic, emqx_reason_codes:text(ReasonCode)]),
             case deliver({puback, PacketId, ReasonCode}, PState) of
                 {ok, PState1} ->
-                    do_acl_deny_action(Packet, ReasonCode, PState1);
+                    AclDenyAction = emqx_zone:get_env(Zone, acl_deny_action, ignore),
+                    do_acl_deny_action(AclDenyAction, Packet, ReasonCode, PState1);
                 Error -> Error
             end
     end;
 
-process(Packet = ?PUBLISH_PACKET(?QOS_2, Topic, PacketId, _Payload), PState) ->
+process(Packet = ?PUBLISH_PACKET(?QOS_2, Topic, PacketId, _Payload), PState = #pstate{zone = Zone}) ->
     case check_publish(Packet, PState) of
         ok ->
             do_publish(Packet, PState);
         {error, ReasonCode} ->
-            ?LOG(warning, "[Protocol] Cannot publish qos2 message to ~s for ~s",
+            ?LOG(warning, "Cannot publish qos2 message to ~s for ~s",
                  [Topic, emqx_reason_codes:text(ReasonCode)]),
             case deliver({pubrec, PacketId, ReasonCode}, PState) of
                 {ok, PState1} ->
-                    do_acl_deny_action(Packet, ReasonCode, PState1);
+                    AclDenyAction = emqx_zone:get_env(Zone, acl_deny_action, ignore),
+                    do_acl_deny_action(AclDenyAction, Packet, ReasonCode, PState1);
                 Error -> Error
             end
     end;
@@ -487,7 +491,7 @@ process(?PUBCOMP_PACKET(PacketId, ReasonCode), PState = #pstate{session = SPid})
     {ok = emqx_session:pubcomp(SPid, PacketId, ReasonCode), PState};
 
 process(Packet = ?SUBSCRIBE_PACKET(PacketId, Properties, RawTopicFilters),
-        PState = #pstate{session = SPid, credentials = Credentials}) ->
+        PState = #pstate{zone = Zone, session = SPid, credentials = Credentials}) ->
     case check_subscribe(parse_topic_filters(?SUBSCRIBE, raw_topic_filters(PState, RawTopicFilters)), PState) of
         {ok, TopicFilters} ->
             TopicFilters0 = emqx_hooks:run_fold('client.subscribe', [Credentials], TopicFilters),
@@ -501,11 +505,12 @@ process(Packet = ?SUBSCRIBE_PACKET(PacketId, Properties, RawTopicFilters),
                                 ({Topic, #{rc := Code}}, {Topics, Codes}) ->
                                     {[Topic|Topics], [Code|Codes]}
                             end, {[], []}, TopicFilters),
-            ?LOG(warning, "[Protocol] Cannot subscribe ~p for ~p",
+            ?LOG(warning, "Cannot subscribe ~p for ~p",
                  [SubTopics, [emqx_reason_codes:text(R) || R <- ReasonCodes]]),
             case deliver({suback, PacketId, ReasonCodes}, PState) of
                 {ok, PState1} ->
-                    do_acl_deny_action(Packet, ReasonCodes, PState1);
+                    AclDenyAction = emqx_zone:get_env(Zone, acl_deny_action, ignore),
+                    do_acl_deny_action(AclDenyAction, Packet, ReasonCodes, PState1);
                 Error ->
                     Error
             end
@@ -691,10 +696,13 @@ deliver({disconnect, _ReasonCode}, PState) ->
 -spec(send(emqx_mqtt_types:packet(), state()) -> {ok, state()} | {error, term()}).
 send(Packet = ?PACKET(Type), PState = #pstate{proto_ver = Ver, sendfun = Send}) ->
     case Send(Packet, #{version => Ver}) of
+        ok ->
+            trace(send, Packet),
+            {ok, PState};
         {ok, Data} ->
             trace(send, Packet),
-            emqx_metrics:sent(Packet),
-            emqx_metrics:trans(inc, 'bytes/sent', iolist_size(Data)),
+            emqx_metrics:inc_sent(Packet),
+            ok = emqx_metrics:inc('bytes.sent', iolist_size(Data)),
             {ok, inc_stats(send, Type, PState)};
         {error, Reason} ->
             {error, Reason}
@@ -703,12 +711,12 @@ send(Packet = ?PACKET(Type), PState = #pstate{proto_ver = Ver, sendfun = Send}) 
 %%------------------------------------------------------------------------------
 %% Maybe use username replace client id
 
-maybe_use_username_as_clientid(ClientId, undefined, _PState) ->
-    ClientId;
-maybe_use_username_as_clientid(ClientId, Username, #pstate{zone = Zone}) ->
+maybe_use_username_as_clientid(ClientId, PState = #pstate{username = undefined}) ->
+    PState#pstate{client_id = ClientId};
+maybe_use_username_as_clientid(ClientId, PState = #pstate{username = Username, zone = Zone}) ->
     case emqx_zone:get_env(Zone, use_username_as_clientid, false) of
-        true -> Username;
-        false -> ClientId
+        true -> PState#pstate{client_id = Username};
+        false -> PState#pstate{client_id = ClientId}
     end.
 
 %%------------------------------------------------------------------------------
@@ -772,7 +780,8 @@ check_connect(Packet, PState) ->
                      fun check_client_id/2,
                      fun check_flapping/2,
                      fun check_banned/2,
-                     fun check_will_topic/2], Packet, PState).
+                     fun check_will_topic/2,
+                     fun check_will_retain/2], Packet, PState).
 
 check_proto_ver(#mqtt_packet_connect{proto_ver  = Ver,
                                      proto_name = Name}, _PState) ->
@@ -806,16 +815,13 @@ check_client_id(#mqtt_packet_connect{client_id = ClientId}, #pstate{zone = Zone}
 check_flapping(#mqtt_packet_connect{}, PState) ->
     do_flapping_detect(connect, PState).
 
-check_banned(_ConnPkt, #pstate{enable_ban = false}) ->
-    ok;
 check_banned(#mqtt_packet_connect{client_id = ClientId, username = Username},
-             #pstate{peername = Peername}) ->
-    case emqx_banned:check(#{client_id => ClientId,
-                             username  => Username,
-                             peername  => Peername}) of
-        true  -> {error, ?RC_BANNED};
-        false -> ok
-    end.
+             #pstate{zone = Zone, peername = Peername}) ->
+    Credentials = #{client_id => ClientId,
+                    username  => Username,
+                    peername  => Peername},
+    EnableBan = emqx_zone:get_env(Zone, enable_ban, false),
+    do_check_banned(EnableBan, Credentials).
 
 check_will_topic(#mqtt_packet_connect{will_flag = false}, _PState) ->
     ok;
@@ -826,14 +832,24 @@ check_will_topic(#mqtt_packet_connect{will_topic = WillTopic} = ConnPkt, PState)
             {error, ?RC_TOPIC_NAME_INVALID}
     end.
 
-check_will_acl(_ConnPkt, #pstate{enable_acl = EnableAcl}) when not EnableAcl ->
+check_will_retain(#mqtt_packet_connect{will_retain = false, proto_ver = ?MQTT_PROTO_V5}, _PState) ->
     ok;
-check_will_acl(#mqtt_packet_connect{will_topic = WillTopic}, #pstate{credentials = Credentials}) ->
-    case emqx_access_control:check_acl(Credentials, publish, WillTopic) of
-        allow -> ok;
-        deny ->
-            ?LOG(warning, "[Protocol] Cannot publish will message to ~p for acl denied", [WillTopic]),
-            {error, ?RC_NOT_AUTHORIZED}
+check_will_retain(#mqtt_packet_connect{will_retain = true, proto_ver = ?MQTT_PROTO_V5}, #pstate{zone = Zone}) ->
+    case emqx_zone:get_env(Zone, mqtt_retain_available, true) of
+        true -> {error, ?RC_RETAIN_NOT_SUPPORTED};
+        false -> ok
+    end;
+check_will_retain(_Packet, _PState) ->
+    ok.
+
+check_will_acl(#mqtt_packet_connect{will_topic = WillTopic},
+               #pstate{zone = Zone, credentials = Credentials}) ->
+    EnableAcl = emqx_zone:get_env(Zone, enable_acl, false),
+    case do_acl_check(EnableAcl, publish, Credentials, WillTopic) of
+        ok -> ok;
+        Other ->
+            ?LOG(warning, "Cannot publish will message to ~p for acl denied", [WillTopic]),
+            Other
     end.
 
 check_publish(Packet, PState) ->
@@ -845,14 +861,13 @@ check_pub_caps(#mqtt_packet{header = #mqtt_packet_header{qos = QoS, retain = Ret
                #pstate{zone = Zone}) ->
     emqx_mqtt_caps:check_pub(Zone, #{qos => QoS, retain => Retain}).
 
-check_pub_acl(_Packet, #pstate{credentials = #{is_superuser := IsSuper}, enable_acl = EnableAcl})
-        when IsSuper orelse (not EnableAcl) ->
+check_pub_acl(_Packet, #pstate{credentials = #{is_superuser := IsSuper}})
+        when IsSuper ->
     ok;
-check_pub_acl(#mqtt_packet{variable = #mqtt_packet_publish{topic_name = Topic}}, #pstate{credentials = Credentials}) ->
-    case emqx_access_control:check_acl(Credentials, publish, Topic) of
-        allow -> ok;
-        deny -> {error, ?RC_NOT_AUTHORIZED}
-    end.
+check_pub_acl(#mqtt_packet{variable = #mqtt_packet_publish{topic_name = Topic}},
+              #pstate{zone = Zone, credentials = Credentials}) ->
+    EnableAcl = emqx_zone:get_env(Zone, enable_acl, false),
+    do_acl_check(EnableAcl, publish, Credentials, Topic).
 
 run_check_steps([], _Packet, _PState) ->
     ok;
@@ -872,23 +887,24 @@ check_subscribe(TopicFilters, PState = #pstate{zone = Zone}) ->
             {error, TopicFilter1}
     end.
 
-check_sub_acl(TopicFilters, #pstate{credentials = #{is_superuser := IsSuper}, enable_acl = EnableAcl})
-        when IsSuper orelse (not EnableAcl) ->
+check_sub_acl(TopicFilters, #pstate{credentials = #{is_superuser := IsSuper}})
+        when IsSuper ->
     {ok, TopicFilters};
-check_sub_acl(TopicFilters, #pstate{credentials = Credentials}) ->
+check_sub_acl(TopicFilters, #pstate{zone = Zone, credentials = Credentials}) ->
+    EnableAcl = emqx_zone:get_env(Zone, enable_acl, false),
     lists:foldr(
-      fun({Topic, SubOpts}, {Ok, Acc}) ->
-              case emqx_access_control:check_acl(Credentials, subscribe, Topic) of
-                  allow -> {Ok, [{Topic, SubOpts}|Acc]};
-                  deny  ->
-                      {error, [{Topic, SubOpts#{rc := ?RC_NOT_AUTHORIZED}}|Acc]}
-              end
+      fun({Topic, SubOpts}, {ok, Acc}) when EnableAcl ->
+              AllowTerm = {ok, [{Topic, SubOpts}|Acc]},
+              DenyTerm = {error, [{Topic, SubOpts#{rc := ?RC_NOT_AUTHORIZED}}|Acc]},
+              do_acl_check(subscribe, Credentials, Topic, AllowTerm, DenyTerm);
+         (TopicFilter, {ok, Acc}) ->
+              {ok, [TopicFilter | Acc]}
       end, {ok, []}, TopicFilters).
 
 trace(recv, Packet) ->
-    ?LOG(debug, "[Protocol] RECV ~s", [emqx_packet:format(Packet)]);
+    ?LOG(debug, "RECV ~s", [emqx_packet:format(Packet)]);
 trace(send, Packet) ->
-    ?LOG(debug, "[Protocol] SEND ~s", [emqx_packet:format(Packet)]).
+    ?LOG(debug, "SEND ~s", [emqx_packet:format(Packet)]).
 
 inc_stats(recv, Type, PState = #pstate{recv_stats = Stats}) ->
     PState#pstate{recv_stats = inc_stats(Type, Stats)};
@@ -914,7 +930,7 @@ terminate(Reason, PState) when Reason =:= conflict;
 
 terminate(Reason, PState = #pstate{credentials = Credentials}) ->
     do_flapping_detect(disconnect, PState),
-    ?LOG(info, "[Protocol] Shutdown for ~p", [Reason]),
+    ?LOG(info, "Shutdown for ~p", [Reason]),
     ok = emqx_hooks:run('client.disconnected', [Credentials, Reason]).
 
 start_keepalive(0, _PState) ->
@@ -943,53 +959,53 @@ flag(true)  -> 1.
 %% Execute actions in case acl deny
 
 do_flapping_detect(Action, #pstate{zone = Zone,
-                                   client_id = ClientId,
-                                   enable_flapping_detect = true}) ->
-    BanExpiryInterval = emqx_zone:get_env(Zone, flapping_ban_expiry_interval, 3600000),
-    Threshold = emqx_zone:get_env(Zone, flapping_threshold, 20),
-    Until = erlang:system_time(second) + BanExpiryInterval,
-    case emqx_flapping:check(Action, ClientId, Threshold) of
-        flapping ->
-            emqx_banned:add(#banned{who = {client_id, ClientId},
-                                    reason = <<"flapping">>,
-                                    by = <<"flapping_checker">>,
-                                    until = Until}),
-            ok;
-        _Other ->
-            ok
-    end;
-do_flapping_detect(_Action, _PState) ->
-    ok.
+                                   client_id = ClientId}) ->
+    ok = case emqx_zone:get_env(Zone, enable_flapping_detect, false) of
+             true ->
+                 Threshold = emqx_zone:get_env(Zone, flapping_threshold, {10, 60}),
+                 case emqx_flapping:check(Action, ClientId, Threshold) of
+                     flapping ->
+                         BanExpiryInterval = emqx_zone:get_env(Zone, flapping_banned_expiry_interval, 3600000),
+                         Until = erlang:system_time(second) + BanExpiryInterval,
+                         emqx_banned:add(#banned{who = {client_id, ClientId},
+                                                 reason = <<"flapping">>,
+                                                 by = <<"flapping_checker">>,
+                                                 until = Until}),
+                         ok;
+                     _Other ->
+                         ok
+                 end;
+             _EnableFlappingDetect -> ok
+         end.
 
-do_acl_deny_action(?PUBLISH_PACKET(?QOS_0, _Topic, _PacketId, _Payload),
-                   ?RC_NOT_AUTHORIZED, PState = #pstate{proto_ver = ProtoVer,
-                                                        acl_deny_action = disconnect}) ->
+do_acl_deny_action(disconnect, ?PUBLISH_PACKET(?QOS_0, _Topic, _PacketId, _Payload),
+                   ?RC_NOT_AUTHORIZED, PState = #pstate{proto_ver = ProtoVer}) ->
     {error, emqx_reason_codes:name(?RC_NOT_AUTHORIZED, ProtoVer), PState};
 
-do_acl_deny_action(?PUBLISH_PACKET(?QOS_1, _Topic, _PacketId, _Payload),
-                   ?RC_NOT_AUTHORIZED, PState = #pstate{proto_ver = ProtoVer,
-                                                        acl_deny_action = disconnect}) ->
+do_acl_deny_action(disconnect, ?PUBLISH_PACKET(QoS, _Topic, _PacketId, _Payload),
+                   ?RC_NOT_AUTHORIZED, PState = #pstate{proto_ver = ProtoVer})
+  when QoS =:= ?QOS_1; QoS =:= ?QOS_2 ->
     deliver({disconnect, ?RC_NOT_AUTHORIZED}, PState),
     {error, emqx_reason_codes:name(?RC_NOT_AUTHORIZED, ProtoVer), PState};
 
-do_acl_deny_action(?PUBLISH_PACKET(?QOS_2, _Topic, _PacketId, _Payload),
-                   ?RC_NOT_AUTHORIZED, PState = #pstate{proto_ver = ProtoVer,
-                                                        acl_deny_action = disconnect}) ->
-    deliver({disconnect, ?RC_NOT_AUTHORIZED}, PState),
-    {error, emqx_reason_codes:name(?RC_NOT_AUTHORIZED, ProtoVer), PState};
+do_acl_deny_action(Action, ?SUBSCRIBE_PACKET(_PacketId, _Properties, _RawTopicFilters), ReasonCodes, PState)
+  when is_list(ReasonCodes) ->
+    traverse_reason_codes(ReasonCodes, Action, PState);
+do_acl_deny_action(_OtherAction, _PubSubPacket, ?RC_NOT_AUTHORIZED, PState) ->
+    {ok, PState};
+do_acl_deny_action(_OtherAction, _PubSubPacket, ReasonCode, PState = #pstate{proto_ver = ProtoVer}) ->
+    {error, emqx_reason_codes:name(ReasonCode, ProtoVer), PState}.
 
-do_acl_deny_action(?SUBSCRIBE_PACKET(_PacketId, _Properties, _RawTopicFilters),
-                   ReasonCodes, PState = #pstate{proto_ver = ProtoVer,
-                                                 acl_deny_action = disconnect}) ->
-    case lists:member(?RC_NOT_AUTHORIZED, ReasonCodes) of
-        true ->
-            deliver({disconnect, ?RC_NOT_AUTHORIZED}, PState),
-            {error, emqx_reason_codes:name(?RC_NOT_AUTHORIZED, ProtoVer), PState};
-        false ->
-            {ok, PState}
-    end;
-do_acl_deny_action(_PubSupPacket, _ReasonCode, PState) ->
-    {ok, PState}.
+traverse_reason_codes([], _Action, PState) ->
+    {ok, PState};
+traverse_reason_codes([?RC_SUCCESS | LeftReasonCodes], Action, PState) ->
+    traverse_reason_codes(LeftReasonCodes, Action, PState);
+traverse_reason_codes([?RC_NOT_AUTHORIZED | _LeftReasonCodes], disconnect, PState = #pstate{proto_ver = ProtoVer}) ->
+    {error, emqx_reason_codes:name(?RC_NOT_AUTHORIZED, ProtoVer), PState};
+traverse_reason_codes([?RC_NOT_AUTHORIZED | LeftReasonCodes], Action, PState) ->
+    traverse_reason_codes(LeftReasonCodes, Action, PState);
+traverse_reason_codes([OtherCode | _LeftReasonCodes], _Action, PState =  #pstate{proto_ver = ProtoVer}) ->
+    {error, emqx_reason_codes:name(OtherCode, ProtoVer), PState}.
 
 %% Reason code compat
 reason_codes_compat(_PktType, ReasonCodes, ?MQTT_PROTO_V5) ->
@@ -999,9 +1015,8 @@ reason_codes_compat(unsuback, _ReasonCodes, _ProtoVer) ->
 reason_codes_compat(PktType, ReasonCodes, _ProtoVer) ->
     [emqx_reason_codes:compat(PktType, RC) || RC <- ReasonCodes].
 
-raw_topic_filters(#pstate{proto_ver = ProtoVer,
-                          is_bridge = IsBridge,
-                          ignore_loop = IgnoreLoop}, RawTopicFilters) ->
+raw_topic_filters(#pstate{zone = Zone, proto_ver = ProtoVer, is_bridge = IsBridge}, RawTopicFilters) ->
+    IgnoreLoop = emqx_zone:get_env(Zone, ignore_loop_deliver, false),
     case ProtoVer < ?MQTT_PROTO_V5 of
         true ->
             IfIgnoreLoop = case IgnoreLoop of true -> 1; false -> 0 end,
@@ -1015,3 +1030,23 @@ raw_topic_filters(#pstate{proto_ver = ProtoVer,
 
 mountpoint(Credentials) ->
     maps:get(mountpoint, Credentials, undefined).
+
+do_check_banned(_EnableBan = true, Credentials) ->
+    case emqx_banned:check(Credentials) of
+        true  -> {error, ?RC_BANNED};
+        false -> ok
+    end;
+do_check_banned(_EnableBan, _Credentials) -> ok.
+
+do_acl_check(_EnableAcl = true, Action, Credentials, Topic) ->
+    AllowTerm = ok,
+    DenyTerm = {error, ?RC_NOT_AUTHORIZED},
+    do_acl_check(Action, Credentials, Topic, AllowTerm, DenyTerm);
+do_acl_check(_EnableAcl, _Action, _Credentials, _Topic) ->
+    ok.
+
+do_acl_check(Action, Credentials, Topic, AllowTerm, DenyTerm) ->
+    case emqx_access_control:check_acl(Credentials, Action, Topic) of
+        allow -> AllowTerm;
+        deny -> DenyTerm
+    end.

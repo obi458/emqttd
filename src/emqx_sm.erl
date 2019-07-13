@@ -20,6 +20,8 @@
 -include("logger.hrl").
 -include("types.hrl").
 
+-logger_header("[SM]").
+
 %% APIs
 -export([start_link/0]).
 
@@ -114,7 +116,8 @@ discard_session(ClientId, ConnPid) when is_binary(ClientId) ->
           try emqx_session:discard(SessPid, ConnPid)
           catch
               _:Error:_Stk ->
-                  ?LOG(warning, "[SM] Failed to discard ~p: ~p", [SessPid, Error])
+                  unregister_session(ClientId, SessPid),
+                  ?LOG(warning, "Failed to discard ~p: ~p", [SessPid, Error])
           end
       end, lookup_session_pids(ClientId)).
 
@@ -128,7 +131,7 @@ resume_session(ClientId, SessAttrs = #{conn_pid := ConnPid}) ->
             {ok, SessPid};
         SessPids ->
             [SessPid|StalePids] = lists:reverse(SessPids),
-            ?LOG(error, "[SM] More than one session found: ~p", [SessPids]),
+            ?LOG(error, "More than one session found: ~p", [SessPids]),
             lists:foreach(fun(StalePid) ->
                               catch emqx_session:discard(StalePid, ConnPid)
                           end, StalePids),
@@ -223,7 +226,11 @@ set_session_stats(ClientId, SessPid, Stats) when is_binary(ClientId), is_pid(Ses
 lookup_session_pids(ClientId) ->
     case emqx_sm_registry:is_enabled() of
         true -> emqx_sm_registry:lookup_session(ClientId);
-        false -> emqx_tables:lookup_value(?SESSION_TAB, ClientId, [])
+        false ->
+            case emqx_tables:lookup_value(?SESSION_TAB, ClientId) of
+                undefined -> [];
+                SessPid when is_pid(SessPid) -> [SessPid]
+            end
     end.
 
 %% @doc Dispatch a message to the session.
@@ -250,15 +257,15 @@ init([]) ->
     {ok, #{}}.
 
 handle_call(Req, _From, State) ->
-    ?LOG(error, "[SM] Unexpected call: ~p", [Req]),
+    ?LOG(error, "Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?LOG(error, "[SM] Unexpected cast: ~p", [Msg]),
+    ?LOG(error, "Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info(Info, State) ->
-    ?LOG(error, "[SM] Unexpected info: ~p", [Info]),
+    ?LOG(error, "Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -280,8 +287,8 @@ clean_down(Session = {ClientId, SessPid}) ->
     end.
 
 stats_fun() ->
-    safe_update_stats(?SESSION_TAB, 'sessions/count', 'sessions/max'),
-    safe_update_stats(?SESSION_P_TAB, 'sessions/persistent/count', 'sessions/persistent/max').
+    safe_update_stats(?SESSION_TAB, 'sessions.count', 'sessions.max'),
+    safe_update_stats(?SESSION_P_TAB, 'sessions.persistent.count', 'sessions.persistent.max').
 
 safe_update_stats(Tab, Stat, MaxStat) ->
     case ets:info(Tab, size) of

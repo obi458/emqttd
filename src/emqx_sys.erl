@@ -19,6 +19,8 @@
 -include("emqx.hrl").
 -include("logger.hrl").
 
+-logger_header("[SYS]").
+
 -export([start_link/0]).
 
 -export([ version/0
@@ -117,11 +119,11 @@ handle_call(uptime, _From, State) ->
     {reply, uptime(State), State};
 
 handle_call(Req, _From, State) ->
-    ?LOG(error, "[SYS] Unexpected call: ~p", [Req]),
+    ?LOG(error, "Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?LOG(error, "[SYS] Unexpected cast: ~p", [Msg]),
+    ?LOG(error, "Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({timeout, TRef, heartbeat}, State = #state{heartbeat = TRef}) ->
@@ -138,7 +140,7 @@ handle_info({timeout, TRef, tick}, State = #state{ticker = TRef, version = Versi
     {noreply, tick(State), hibernate};
 
 handle_info(Info, State) ->
-    ?LOG(error, "[SYS] Unexpected info: ~p", [Info]),
+    ?LOG(error, "Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #state{heartbeat = TRef1, ticker = TRef2}) ->
@@ -184,8 +186,11 @@ publish(stats, Stats) ->
     [safe_publish(systop(lists:concat(['stats/', Stat])), integer_to_binary(Val))
      || {Stat, Val} <- Stats, is_atom(Stat), is_integer(Val)];
 publish(metrics, Metrics) ->
-    [safe_publish(systop(lists:concat(['metrics/', Metric])), integer_to_binary(Val))
-     || {Metric, Val} <- Metrics, is_atom(Metric), is_integer(Val)].
+    [safe_publish(systop(metric_topic(Name)), integer_to_binary(Val))
+     || {Name, Val} <- Metrics, is_atom(Name), is_integer(Val)].
+
+metric_topic(Name) ->
+    lists:concat(["metrics/", string:replace(atom_to_list(Name), ".", "/", all)]).
 
 safe_publish(Topic, Payload) ->
     safe_publish(Topic, #{}, Payload).
