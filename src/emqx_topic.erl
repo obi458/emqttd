@@ -217,6 +217,8 @@ parse({TopicFilter, Options}) when is_binary(TopicFilter) ->
     parse(TopicFilter, Options).
 
 -spec(parse(topic(), map()) -> {topic(), map()}).
+parse(<<"$local/", TopicFilter/binary>>, Options) -> %cw
+    parse(TopicFilter, Options);
 parse(TopicFilter = <<"$queue/", _/binary>>, #{share := _Group}) ->
     error({invalid_topic_filter, TopicFilter});
 parse(TopicFilter = <<"$share/", _/binary>>, #{share := _Group}) ->

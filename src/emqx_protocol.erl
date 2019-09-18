@@ -213,14 +213,17 @@ credentials(#pstate{zone      = Zone,
                     sockname  = Sockname,
                     peername  = Peername,
                     peercert  = Peercert,
-                    ws_cookie = WsCookie}) ->
+                    ws_cookie = WsCookie,
+                    connected_at = ConnectedAt}) -> %cw
     with_cert(#{zone => Zone,
                 client_id => ClientId,
                 sockname => Sockname,
                 username => Username,
                 peername => Peername,
                 ws_cookie => WsCookie,
-                mountpoint => emqx_zone:get_env(Zone, mountpoint)}, Peercert).
+                connected_at => ConnectedAt, %cw
+
+        mountpoint => emqx_zone:get_env(Zone, mountpoint)}, Peercert).
 
 with_cert(Credentials, undefined) -> Credentials;
 with_cert(Credentials, Peercert) ->
